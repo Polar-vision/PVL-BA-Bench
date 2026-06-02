@@ -55,6 +55,19 @@ powershell -ExecutionPolicy Bypass -File tools\atxml_to_colmap\run.ps1 `
 
 See [tools/atxml_to_colmap](tools/atxml_to_colmap) for details.
 
+### BlocksExchange XML to BAL
+
+Convert BlocksExchange XML files to the classic BAL single-file format:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\atxml_to_bal\run.ps1 `
+  -InputXml path\to\AT.xml `
+  -OutputBal path\to\problem.bal `
+  -Mode normalized
+```
+
+See [tools/atxml_to_bal](tools/atxml_to_bal) for details.
+
 ### COLMAP to PVL-BA
 
 Convert COLMAP text models to PVL-BA:
