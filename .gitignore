@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.DS_Store
+Thumbs.db
+
+# Large local datasets and generated outputs
+data/
+datasets/
+outputs/
+*_OUTPUT/
+REL_AT*/
+COLMAP_TEXT_MODEL/
+PVL_BA_OUTPUT/
+
