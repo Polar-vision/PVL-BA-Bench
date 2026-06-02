@@ -25,6 +25,22 @@ The format separates camera intrinsics, camera poses, 3D points, and feature tra
 
 ## Tools
 
+## Sample Data
+
+A small BlocksExchange XML sample is included for testing the converters:
+
+```text
+samples/blocks_exchange/sample_at.xml
+```
+
+It contains 8 images, 30 tie points, and 105 observations. Example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\atxml_to_pvl_ba\run.ps1 `
+  -InputXml samples\blocks_exchange\sample_at.xml `
+  -OutputDir outputs\sample_pvl_ba
+```
+
 ### BlocksExchange XML to PVL-BA
 
 Convert Bentley ContextCapture / iTwin Capture compatible `BlocksExchange XML` files, commonly named `AT.xml`, into PVL-BA:

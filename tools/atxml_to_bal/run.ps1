@@ -1,5 +1,5 @@
 param(
-    [string]$InputXml = "..\REL_AT\AT.xml",
+    [string]$InputXml = "..\..\samples\blocks_exchange\sample_at.xml",
     [string]$OutputBal = "..\problem.bal",
     [ValidateSet("normalized", "pixel")]
     [string]$Mode = "normalized"
@@ -32,4 +32,3 @@ if (-not $python -or $python.Source -like "*\WindowsApps\python.exe") {
     --input (Resolve-ProjectPath $InputXml) `
     --output (Resolve-ProjectPath $OutputBal) `
     --mode $Mode
-

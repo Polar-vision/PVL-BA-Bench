@@ -1,5 +1,5 @@
 param(
-    [string]$InputXml = "..\REL_AT\AT.xml",
+    [string]$InputXml = "..\..\samples\blocks_exchange\sample_at.xml",
     [string]$OutputDir = "..\COLMAP_TEXT_MODEL",
     [ValidateSet("OPENCV", "FULL_OPENCV")]
     [string]$CameraModel = "OPENCV"
