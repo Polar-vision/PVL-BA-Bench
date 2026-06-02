@@ -245,7 +245,8 @@ def write_feature(
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for point in points:
             fields = [str(len(point.track))]
-            for image_id, point2d_idx in sorted(point.track, key=lambda item: images[item[0]].pvl_index):
+            observations = []
+            for image_id, point2d_idx in point.track:
                 image = images[image_id]
                 u, v, observed_point_id = image.points2d[point2d_idx]
                 if observed_point_id != point.point3d_id:
@@ -254,7 +255,9 @@ def write_feature(
                         f"point2D {point2d_idx} references {observed_point_id}"
                     )
                 uu, vv = undistort_pixel(u, v, cameras[image.camera_id], iterations)
-                fields.extend((str(image.pvl_index), f"{uu:.12f}", f"{vv:.12f}"))
+                observations.append((image.pvl_index, uu, vv))
+            for image_idx, uu, vv in sorted(observations, key=lambda observation: observation):
+                fields.extend((str(image_idx), f"{uu:.12f}", f"{vv:.12f}"))
             fh.write(" ".join(fields))
             fh.write("\n")
 
@@ -282,4 +285,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

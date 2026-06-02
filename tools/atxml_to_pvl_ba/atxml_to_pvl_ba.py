@@ -189,7 +189,7 @@ def write_feature(path: Path, tiepoints: list[TiePoint]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for tiepoint in tiepoints:
             fields = [str(len(tiepoint.observations))]
-            for image_idx, u, v in tiepoint.observations:
+            for image_idx, u, v in sorted(tiepoint.observations, key=lambda observation: observation):
                 fields.extend((str(image_idx), f"{u:.12f}", f"{v:.12f}"))
             fh.write(" ".join(fields))
             fh.write("\n")
