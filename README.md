@@ -55,6 +55,20 @@ powershell -ExecutionPolicy Bypass -File tools\atxml_to_colmap\run.ps1 `
 
 See [tools/atxml_to_colmap](tools/atxml_to_colmap) for details.
 
+### COLMAP to PVL-BA
+
+Convert COLMAP text models to PVL-BA:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\colmap_to_pvl_ba\run.ps1 `
+  -InputDir path\to\COLMAP_TEXT_MODEL `
+  -OutputDir path\to\PVL_BA_OUTPUT
+```
+
+For COLMAP `OPENCV` cameras, observations are undistorted before writing `Feature.txt`.
+
+See [tools/colmap_to_pvl_ba](tools/colmap_to_pvl_ba) for details.
+
 ## Input Format
 
 `AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software.
@@ -66,4 +80,3 @@ This repository currently contains tools and format documentation. Dataset downl
 ## Citation
 
 Citation information will be added when the benchmark paper or technical report is released.
-
