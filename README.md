@@ -113,6 +113,18 @@ For COLMAP `OPENCV` cameras, observations are undistorted before writing `Featur
 
 See [tools/colmap_to_pvl_ba](tools/colmap_to_pvl_ba) for details.
 
+### BA Dataset Visualizer
+
+Generate an interactive browser viewer for COLMAP text BA datasets:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run.ps1 `
+  -InputDir path\to\COLMAP_TEXT_MODEL `
+  -OutputHtml path\to\viewer.html
+```
+
+The viewer renders sparse 3D points, camera centers, camera frustums, and optional `gcp.txt` / `gcp_observations.txt` sidecars. See [tools/ba_visualizer](tools/ba_visualizer) for details.
+
 ## Input Format
 
 `AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software, including Daspatial Reconstruction Master outputs.
