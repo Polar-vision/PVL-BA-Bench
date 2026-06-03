@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Generate an interactive HTML viewer for BA datasets."""
 
 from __future__ import annotations
@@ -45,10 +45,20 @@ class Gcp:
     observation_count: int
 
 
+@dataclass(frozen=True)
+class PvlCamera:
+    rotation: list[list[float]]
+    center: tuple[float, float, float]
+    intrinsics: tuple[float, float, float, float]
+    width: int
+    height: int
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-dir", required=True, type=Path, help="COLMAP text model directory")
+    parser.add_argument("--input-dir", required=True, type=Path, help="COLMAP text model or PVL-BA directory")
     parser.add_argument("--output", required=True, type=Path, help="Output HTML file")
+    parser.add_argument("--format", choices=("auto", "colmap", "pvl-ba"), default="auto")
     parser.add_argument("--max-points", type=int, default=100_000, help="Maximum sparse points to embed")
     parser.add_argument("--camera-stride", type=int, default=1, help="Embed every Nth camera frustum")
     return parser.parse_args()
@@ -76,6 +86,24 @@ def camera_center(image: Image) -> tuple[float, float, float]:
 def world_to_viewer(point: tuple[float, float, float]) -> tuple[float, float, float]:
     x, y, z = point
     return (x, z, -y)
+
+
+def rotation_from_euler(ey: float, ex: float, ez: float) -> list[list[float]]:
+    c1 = math.cos(ey)
+    c2 = math.cos(ex)
+    c3 = math.cos(ez)
+    s1 = math.sin(ey)
+    s2 = math.sin(ex)
+    s3 = math.sin(ez)
+    return [
+        [c1 * c3 - s1 * s2 * s3, c2 * s3, s1 * c3 + c1 * s2 * s3],
+        [-c1 * s3 - s1 * s2 * c3, c2 * c3, -s1 * s3 + c1 * s2 * c3],
+        [-s1 * c2, -s2, c1 * c2],
+    ]
+
+
+def mat_vec(matrix: list[list[float]], vector: tuple[float, float, float]) -> tuple[float, float, float]:
+    return tuple(sum(matrix[row][col] * vector[col] for col in range(3)) for row in range(3))
 
 
 def read_camera(path: Path) -> dict[int, Camera]:
@@ -163,6 +191,103 @@ def read_gcps(input_dir: Path) -> list[Gcp]:
     return gcps
 
 
+def read_noise_metadata(input_dir: Path) -> dict:
+    path = input_dir / "noise_metadata.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def detect_format(input_dir: Path, requested_format: str) -> str:
+    if requested_format != "auto":
+        return requested_format
+    if (input_dir / "cameras.txt").exists() and (input_dir / "images.txt").exists() and (input_dir / "points3D.txt").exists():
+        return "colmap"
+    if (input_dir / "cal.txt").exists() and (input_dir / "XYZ.txt").exists() and (input_dir / "Feature.txt").exists():
+        return "pvl-ba"
+    raise FileNotFoundError("Could not detect COLMAP or PVL-BA dataset files")
+
+
+def read_pvl_intrinsics(path: Path) -> list[tuple[float, float, float, float]]:
+    rows = [list(map(float, line.split())) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    intrinsics = []
+    for index in range(0, len(rows), 3):
+        K = rows[index : index + 3]
+        intrinsics.append((K[0][0], K[1][1], K[0][2], K[1][2]))
+    return intrinsics
+
+
+def find_pvl_cam_file(input_dir: Path) -> Path:
+    matches = sorted(input_dir.glob("Cam*-*.txt"))
+    if not matches:
+        matches = sorted(input_dir.glob("Cam.txt"))
+    if not matches:
+        raise FileNotFoundError("No PVL-BA camera file found")
+    return matches[0]
+
+
+def read_pvl_cameras(input_dir: Path) -> list[PvlCamera]:
+    intrinsics = read_pvl_intrinsics(input_dir / "cal.txt")
+    cameras = []
+    for line in find_pvl_cam_file(input_dir).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        values = list(map(float, line.split()))
+        group_index = int(values[6]) - 1
+        fx, fy, cx, cy = intrinsics[group_index]
+        cameras.append(
+            PvlCamera(
+                rotation=rotation_from_euler(values[0], values[1], values[2]),
+                center=tuple(values[3:6]),
+                intrinsics=(fx, fy, cx, cy),
+                width=max(1, int(round(cx * 2.0))),
+                height=max(1, int(round(cy * 2.0))),
+            )
+        )
+    return cameras
+
+
+def read_pvl_track_lengths(path: Path) -> list[int]:
+    return [int(line.split()[0]) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def read_pvl_points(input_dir: Path, max_points: int) -> list[Point3D]:
+    track_lengths = read_pvl_track_lengths(input_dir / "Feature.txt")
+    points = []
+    for index, line in enumerate((input_dir / "XYZ.txt").read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        points.append(Point3D(index, tuple(map(float, line.split())), (210, 220, 190), track_lengths[index - 1]))
+    if len(points) <= max_points:
+        return points
+    step = len(points) / max_points
+    return [points[int(index * step)] for index in range(max_points)]
+
+
+def pvl_project(point: tuple[float, float, float], camera: PvlCamera) -> tuple[float, float]:
+    vector = tuple(point[index] - camera.center[index] for index in range(3))
+    x_cam, y_cam, z_cam = mat_vec(camera.rotation, vector)
+    fx, fy, cx, cy = camera.intrinsics
+    return fx * x_cam / z_cam + cx, fy * y_cam / z_cam + cy
+
+
+def pvl_rmse(input_dir: Path, cameras: list[PvlCamera]) -> tuple[int, float]:
+    points = [tuple(map(float, line.split())) for line in (input_dir / "XYZ.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
+    sum_squared = 0.0
+    count = 0
+    for point, line in zip(points, (input_dir / "Feature.txt").read_text(encoding="utf-8").splitlines()):
+        tokens = line.split()
+        track_len = int(tokens[0])
+        for observation_index in range(track_len):
+            image_index = int(tokens[1 + 3 * observation_index])
+            observed_u = float(tokens[2 + 3 * observation_index])
+            observed_v = float(tokens[3 + 3 * observation_index])
+            projected_u, projected_v = pvl_project(point, cameras[image_index])
+            sum_squared += (projected_u - observed_u) ** 2 + (projected_v - observed_v) ** 2
+            count += 1
+    return count, math.sqrt(sum_squared / count)
+
+
 def bounds(points: list[tuple[float, float, float]]) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     mins = [min(point[index] for point in points) for index in range(3)]
     maxs = [max(point[index] for point in points) for index in range(3)]
@@ -204,7 +329,37 @@ def frustum_segments(image: Image, camera: Camera, scale: float) -> list[tuple[f
     return vertices
 
 
-def build_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
+def pvl_frustum_segments(camera: PvlCamera, scale: float) -> list[tuple[float, float, float]]:
+    fx, fy, cx, cy = camera.intrinsics
+    z = scale
+    corners_camera = [
+        ((0.0 - cx) / fx * z, (0.0 - cy) / fy * z, z),
+        ((camera.width - cx) / fx * z, (0.0 - cy) / fy * z, z),
+        ((camera.width - cx) / fx * z, (camera.height - cy) / fy * z, z),
+        ((0.0 - cx) / fx * z, (camera.height - cy) / fy * z, z),
+    ]
+    corners_world = []
+    for corner in corners_camera:
+        offset = rotation_transpose_vec(camera.rotation, corner)
+        corners_world.append(tuple(camera.center[index] + offset[index] for index in range(3)))
+    pairs = [
+        (camera.center, corners_world[0]),
+        (camera.center, corners_world[1]),
+        (camera.center, corners_world[2]),
+        (camera.center, corners_world[3]),
+        (corners_world[0], corners_world[1]),
+        (corners_world[1], corners_world[2]),
+        (corners_world[2], corners_world[3]),
+        (corners_world[3], corners_world[0]),
+    ]
+    vertices = []
+    for start, end in pairs:
+        vertices.append(world_to_viewer(start))
+        vertices.append(world_to_viewer(end))
+    return vertices
+
+
+def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
     cameras = read_camera(input_dir / "cameras.txt")
     images = read_images(input_dir / "images.txt")
     points = read_points(input_dir / "points3D.txt", max_points)
@@ -227,6 +382,7 @@ def build_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
     viewer_center = tuple((viewer_min[index] + viewer_max[index]) * 0.5 for index in range(3))
 
     return {
+        "format": "COLMAP",
         "source": str(input_dir),
         "stats": {
             "points": len(points),
@@ -258,6 +414,75 @@ def build_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
             for index, gcp in enumerate(gcps)
         ],
     }
+
+
+def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
+    cameras = read_pvl_cameras(input_dir)
+    points = read_pvl_points(input_dir, max_points)
+    gcps = read_gcps(input_dir)
+    centers = [camera.center for camera in cameras]
+    all_xyz = [point.xyz for point in points] + centers + [gcp.xyz for gcp in gcps]
+    min_bound, max_bound = bounds(all_xyz)
+    diagonal = math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
+    frustum_scale = max(diagonal * 0.025, 1.0)
+    sampled_cameras = cameras[:: max(1, camera_stride)]
+    frustum_vertices = []
+    for camera in sampled_cameras:
+        frustum_vertices.extend(pvl_frustum_segments(camera, frustum_scale))
+    viewer_points = [world_to_viewer(point.xyz) for point in points]
+    viewer_centers = [world_to_viewer(center) for center in centers]
+    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
+    viewer_min, viewer_max = bounds(viewer_points + viewer_centers + viewer_gcps)
+    viewer_center = tuple((viewer_min[index] + viewer_max[index]) * 0.5 for index in range(3))
+    observation_count, rmse = pvl_rmse(input_dir, cameras)
+    noise_metadata = read_noise_metadata(input_dir)
+    stats = {
+        "points": len(points),
+        "images": len(cameras),
+        "frustums": len(sampled_cameras),
+        "gcps": len(gcps),
+        "maxPoints": max_points,
+        "observations": observation_count,
+        "rmsePx": rmse,
+    }
+    if noise_metadata:
+        stats["targetRmsePx"] = noise_metadata.get("target_rmse_px")
+        stats["noiseScalePx"] = noise_metadata.get("noise_scale_px")
+    return {
+        "format": "PVL-BA",
+        "source": str(input_dir),
+        "stats": stats,
+        "noiseMetadata": noise_metadata,
+        "bounds": {"min": viewer_min, "max": viewer_max, "center": viewer_center, "diagonal": diagonal},
+        "points": {
+            "positions": viewer_points,
+            "colors": [[channel / 255.0 for channel in point.rgb] for point in points],
+            "trackLengths": [point.track_len for point in points],
+        },
+        "cameras": {
+            "centers": viewer_centers,
+            "names": [f"camera_{index:06d}" for index in range(len(cameras))],
+            "frustumVertices": frustum_vertices,
+        },
+        "gcps": [
+            {
+                "id": gcp.gcp_id,
+                "name": gcp.name,
+                "position": viewer_gcps[index],
+                "world": gcp.xyz,
+                "isCheckPoint": gcp.is_check_point,
+                "observations": gcp.observation_count,
+            }
+            for index, gcp in enumerate(gcps)
+        ],
+    }
+
+
+def build_payload(input_dir: Path, requested_format: str, max_points: int, camera_stride: int) -> dict:
+    dataset_format = detect_format(input_dir, requested_format)
+    if dataset_format == "colmap":
+        return build_colmap_payload(input_dir, max_points, camera_stride)
+    return build_pvl_payload(input_dir, max_points, camera_stride)
 
 
 HTML_TEMPLATE = r"""<!doctype html>
@@ -305,14 +530,14 @@ HTML_TEMPLATE = r"""<!doctype html>
       <label><span>GCPs</span><input id="toggleGcps" type="checkbox" checked></label>
       <label><span>Point size</span><input id="pointSize" type="range" min="0.01" max="0.35" value="0.08" step="0.01"></label>
       <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.8" step="0.05"></label>
-      <div class="row"><button id="resetView" title="Reset view">⌂</button><button id="topView" title="Top view">↥</button></div>
+      <div class="row"><button id="resetView" title="Reset view">H</button><button id="topView" title="Top view">T</button></div>
     </section>
     <section class="section">
       <h1>Ground Control Points</h1>
       <div id="gcps"></div>
     </section>
   </aside>
-  <div id="hint">Drag to rotate · wheel to zoom · right-drag to pan</div>
+  <div id="hint">Drag to rotate - wheel to zoom - right-drag to pan</div>
   <script id="payload" type="application/json">__PAYLOAD__</script>
   <script type="importmap">
     {
@@ -327,13 +552,17 @@ HTML_TEMPLATE = r"""<!doctype html>
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     const data = JSON.parse(document.getElementById('payload').textContent);
-    document.getElementById('source').textContent = data.source;
+    document.getElementById('source').textContent = `${data.format} - ${data.source}`;
 
     const stats = document.getElementById('stats');
-    for (const [label, value] of [['Images', data.stats.images], ['Frustums', data.stats.frustums], ['Points', data.stats.points], ['GCPs', data.stats.gcps]]) {
+    const statRows = [['Images', data.stats.images], ['Frustums', data.stats.frustums], ['Points', data.stats.points], ['GCPs', data.stats.gcps]];
+    if (data.stats.observations !== undefined) statRows.push(['Obs.', data.stats.observations]);
+    if (data.stats.rmsePx !== undefined) statRows.push(['RMSE px', Number(data.stats.rmsePx).toFixed(2)]);
+    if (data.stats.targetRmsePx !== undefined) statRows.push(['Target px', Number(data.stats.targetRmsePx).toFixed(2)]);
+    for (const [label, value] of statRows) {
       const node = document.createElement('div');
       node.className = 'stat';
-      node.innerHTML = `<span>${label}</span><strong>${value.toLocaleString()}</strong>`;
+      node.innerHTML = `<span>${label}</span><strong>${typeof value === 'number' ? value.toLocaleString() : value}</strong>`;
       stats.appendChild(node);
     }
 
@@ -440,7 +669,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 
 def main() -> None:
     args = parse_args()
-    payload = build_payload(args.input_dir.resolve(), args.max_points, args.camera_stride)
+    payload = build_payload(args.input_dir.resolve(), args.format, args.max_points, args.camera_stride)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, separators=(",", ":")))
     args.output.write_text(html, encoding="utf-8", newline="\n")
@@ -453,3 +682,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

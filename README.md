@@ -10,6 +10,20 @@ This repository hosts the public tools and documentation for **PVL-BA-Bench**. T
 - **PVL-BA500**: the planned 500-block benchmark dataset.
 - **PVL-BA**: the Polar-vision Lab four-file bundle adjustment data format.
 
+Dataset instances use explicit count tags:
+
+```text
+problem-i<images>-p<points>-o<observations>-g<gcps>
+```
+
+For controlled-quality variants, append the target initial RMSE:
+
+```text
+problem-i507-p40315-o139534-g3-rmse050p00px
+```
+
+This is preferred over bare positional names such as `problem-507-40315-139534-3`, because each count remains self-describing.
+
 ## PVL-BA Format
 
 PVL-BA stores one BA problem as four text files:
@@ -115,15 +129,28 @@ See [tools/colmap_to_pvl_ba](tools/colmap_to_pvl_ba) for details.
 
 ### BA Dataset Visualizer
 
-Generate an interactive browser viewer for COLMAP text BA datasets:
+Generate an interactive browser viewer for COLMAP text or PVL-BA datasets:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run.ps1 `
-  -InputDir path\to\COLMAP_TEXT_MODEL `
+  -InputDir path\to\BA_DATASET `
   -OutputHtml path\to\viewer.html
 ```
 
-The viewer renders sparse 3D points, camera centers, camera frustums, and optional `gcp.txt` / `gcp_observations.txt` sidecars. See [tools/ba_visualizer](tools/ba_visualizer) for details.
+The viewer renders sparse 3D points, camera centers, camera frustums, optional `gcp.txt` / `gcp_observations.txt` sidecars, and PVL-BA noise metadata when present. See [tools/ba_visualizer](tools/ba_visualizer) for details.
+
+### PVL-BA Quality Variants
+
+Generate noisy PVL-BA datasets with controlled initial RMSE:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
+  -InputDir path\to\PVL_BA_OUTPUT `
+  -OutputRoot path\to\QUALITY_VARIANTS `
+  -TargetRmse 5,10,50,100
+```
+
+Noise is applied to `Feature.txt` image observations in PVL-BA, not to COLMAP observations. PVL-BA stores undistorted BA measurements, so target initial RMSE levels are direct and comparable across datasets. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
 
 ## Input Format
 
