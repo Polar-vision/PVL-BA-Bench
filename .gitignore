@@ -5,6 +5,7 @@ venv/
 env/
 .DS_Store
 Thumbs.db
+~$*.docx
 
 # Large local datasets and generated outputs
 data/
@@ -14,4 +15,3 @@ outputs/
 REL_AT*/
 COLMAP_TEXT_MODEL/
 PVL_BA_OUTPUT/
-

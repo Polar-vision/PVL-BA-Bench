@@ -38,6 +38,20 @@ def mat_vec(matrix: list[list[float]], vector: tuple[float, float, float]) -> tu
     )
 
 
+def print_error_stats(label: str, errors: list[float], sum_squared: float) -> None:
+    errors.sort()
+    n = len(errors)
+    print(label)
+    print(f"observations {n}")
+    print(f"mean {sum(errors) / n}")
+    print(f"rmse {math.sqrt(sum_squared / n)}")
+    print(f"median {errors[n // 2]}")
+    print(f"p90 {errors[int(0.90 * n)]}")
+    print(f"p95 {errors[int(0.95 * n)]}")
+    print(f"p99 {errors[int(0.99 * n)]}")
+    print(f"max {errors[-1]}")
+
+
 def main() -> None:
     args = parse_args()
     tokens = args.input.read_text(encoding="utf-8").split()
@@ -89,19 +103,45 @@ def main() -> None:
         if args.samples and observation_index + 1 >= args.samples:
             break
 
-    errors.sort()
-    n = len(errors)
-    print(f"observations {n}")
-    print(f"mean {sum(errors) / n}")
-    print(f"rmse {math.sqrt(sum_squared / n)}")
-    print(f"median {errors[n // 2]}")
-    print(f"p90 {errors[int(0.90 * n)]}")
-    print(f"p95 {errors[int(0.95 * n)]}")
-    print(f"p99 {errors[int(0.99 * n)]}")
-    print(f"max {errors[-1]}")
+    print_error_stats("tie points", errors, sum_squared)
     print(f"depth_min {min_depth} depth_max {max_depth} negative_depth_count {negative_depth}")
+
+    gcp_path = args.input.with_suffix(".gcp.txt")
+    gcp_obs_path = args.input.with_suffix(".gcp_observations.txt")
+    if gcp_path.exists() and gcp_obs_path.exists():
+        gcps = []
+        for line in gcp_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            tokens = line.split()
+            gcps.append(tuple(map(float, tokens[2:5])))
+        gcp_errors = []
+        gcp_sum_squared = 0.0
+        for line in gcp_obs_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            tokens = line.split()
+            gcp_id = int(tokens[0])
+            track_len = int(tokens[1])
+            point = gcps[gcp_id]
+            for observation_index in range(track_len):
+                camera_index = int(tokens[2 + 3 * observation_index])
+                observed_x = float(tokens[3 + 3 * observation_index])
+                observed_y = float(tokens[4 + 3 * observation_index])
+                camera = cameras[camera_index]
+                rotation = angle_axis_to_rotation(camera[:3])
+                translation = camera[3:6]
+                focal = camera[6]
+                pc = mat_vec(rotation, point)
+                pc = tuple(pc[index] + translation[index] for index in range(3))
+                projected_x = focal * pc[0] / pc[2]
+                projected_y = focal * pc[1] / pc[2]
+                error = math.hypot(projected_x - observed_x, projected_y - observed_y)
+                gcp_errors.append(error)
+                gcp_sum_squared += error * error
+        if gcp_errors:
+            print_error_stats("gcps", gcp_errors, gcp_sum_squared)
 
 
 if __name__ == "__main__":
     main()
-

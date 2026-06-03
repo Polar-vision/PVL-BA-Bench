@@ -5,10 +5,18 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    has_complete_pose,
+    parse_ground_control_points,
+    parse_spatial_references,
+    write_gcp_files,
+)
 
 @dataclass(frozen=True)
 class Intrinsics:
@@ -82,19 +90,19 @@ def parse_rotation(rotation: ET.Element) -> list[list[float]]:
 
 def parse_photos(photogroup: ET.Element) -> dict[int, Photo]:
     photos: dict[int, Photo] = {}
-    for row_index, photo in enumerate(photogroup.findall("Photo")):
+    for photo in photogroup.findall("Photo"):
         source_id = int(text(photo, "Id"))
+        if not has_complete_pose(photo):
+            continue
         pose = photo.find("Pose")
-        if pose is None:
-            raise ValueError(f"Photo {source_id} has no Pose")
+        assert pose is not None
         rotation_element = pose.find("Rotation")
         center_element = pose.find("Center")
-        if rotation_element is None or center_element is None:
-            raise ValueError(f"Photo {source_id} has incomplete Pose")
+        assert rotation_element is not None and center_element is not None
         center = tuple(ftext(center_element, axis) for axis in ("x", "y", "z"))
         photos[source_id] = Photo(
             source_id=source_id,
-            row_index=row_index,
+            row_index=len(photos),
             group_id=1,
             rotation=parse_rotation(rotation_element),
             center=center,
@@ -116,11 +124,14 @@ def parse_tiepoints(block: ET.Element, photos: dict[int, Photo], intrinsics: Int
         observations = []
         for measurement in tiepoint.findall("Measurement"):
             source_id = int(text(measurement, "PhotoId"))
+            if source_id not in photos:
+                continue
             xd = ftext(measurement, "x")
             yd = ftext(measurement, "y")
             u, v = undistort_pixel(xd, yd, intrinsics, iterations)
             observations.append((photos[source_id].row_index, u, v))
-        tiepoints.append(TiePoint(xyz=xyz, observations=observations))
+        if len(observations) >= 2:
+            tiepoints.append(TiePoint(xyz=xyz, observations=observations))
     return tiepoints
 
 
@@ -208,19 +219,34 @@ def main() -> None:
     intrinsics = parse_intrinsics(photogroup)
     photos = parse_photos(photogroup)
     tiepoints = parse_tiepoints(block, photos, intrinsics, args.undistort_iterations)
+    references = parse_spatial_references(root)
+    target_srs_id = int(text(block, "SRSId"))
+    photo_index_by_source_id = {source_id: photo.row_index for source_id, photo in photos.items()}
+    gcps = parse_ground_control_points(
+        block,
+        photo_index_by_source_id,
+        references,
+        target_srs_id,
+        lambda x, y: undistort_pixel(x, y, intrinsics, args.undistort_iterations),
+    )
 
     args.output.mkdir(parents=True, exist_ok=True)
     write_cal(args.output / "cal.txt", intrinsics)
     write_cam(args.output / f"Cam-{len(photos)}-.txt", photos)
     write_xyz(args.output / "XYZ.txt", tiepoints)
     write_feature(args.output / "Feature.txt", tiepoints)
+    if gcps:
+        write_gcp_files(args.output / "gcp.txt", args.output / "gcp_observations.txt", gcps)
 
     observations = sum(len(tiepoint.observations) for tiepoint in tiepoints)
+    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote PVL-BA format to {args.output.resolve()}")
     print(f"  intrinsics groups: 1")
     print(f"  cameras: {len(photos)}")
     print(f"  points: {len(tiepoints)}")
     print(f"  observations: {observations}")
+    print(f"  gcps: {len(gcps)}")
+    print(f"  gcp observations: {gcp_observations}")
     print("  Feature.txt coordinates are undistorted pixel coordinates.")
 
 

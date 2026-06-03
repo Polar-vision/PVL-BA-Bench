@@ -6,11 +6,19 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    has_complete_pose,
+    parse_ground_control_points,
+    parse_spatial_references,
+    write_gcp_files,
+)
 
 @dataclass(frozen=True)
 class Camera:
@@ -160,48 +168,56 @@ def parse_camera(photogroup: ET.Element, camera_model: str) -> Camera:
 
 def parse_images(photogroup: ET.Element) -> dict[int, Image]:
     images: dict[int, Image] = {}
+    next_image_id = 1
     for photo in photogroup.findall("Photo"):
-        image_id = int(text(photo, "Id"))
+        source_id = int(text(photo, "Id"))
+        if not has_complete_pose(photo):
+            continue
         image_path = text(photo, "ImagePath")
         pose = photo.find("Pose")
-        if pose is None:
-            raise ValueError(f"Photo {image_id} has no Pose")
+        assert pose is not None
         rotation_element = pose.find("Rotation")
         center_element = pose.find("Center")
-        if rotation_element is None or center_element is None:
-            raise ValueError(f"Photo {image_id} has incomplete Pose")
+        assert rotation_element is not None and center_element is not None
 
         rotation = matrix_from_rotation(rotation_element)
         center = tuple(ftext(center_element, axis) for axis in ("x", "y", "z"))
         qvec = rotation_matrix_to_qvec(rotation)
         rc = mat_vec(rotation, center)
         tvec = (-rc[0], -rc[1], -rc[2])
+        image_id = next_image_id
+        next_image_id += 1
         images[image_id] = Image(image_id, qvec, tvec, 1, image_name_from_path(image_path))
     return images
 
 
-def parse_points(block: ET.Element) -> list[Point3D]:
+def parse_points(block: ET.Element, image_id_by_source_id: dict[int, int]) -> list[Point3D]:
     tiepoints = block.find("TiePoints")
     if tiepoints is None:
         raise ValueError("Missing TiePoints")
 
     points: list[Point3D] = []
-    for point_id, tiepoint in enumerate(tiepoints.findall("TiePoint"), start=1):
+    for tiepoint in tiepoints.findall("TiePoint"):
         position = tiepoint.find("Position")
         if position is None:
-            raise ValueError(f"TiePoint {point_id} has no Position")
+            raise ValueError("TiePoint has no Position")
         xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
         rgb = color_to_rgb(tiepoint.find("Color"))
         observations = []
         for measurement in tiepoint.findall("Measurement"):
+            source_id = int(text(measurement, "PhotoId"))
+            image_id = image_id_by_source_id.get(source_id)
+            if image_id is None:
+                continue
             observations.append(
                 (
-                    int(text(measurement, "PhotoId")),
+                    image_id,
                     ftext(measurement, "x"),
                     ftext(measurement, "y"),
                 )
             )
-        points.append(Point3D(point_id, xyz, rgb, observations))
+        if len(observations) >= 2:
+            points.append(Point3D(len(points) + 1, xyz, rgb, observations))
     return points
 
 
@@ -261,6 +277,15 @@ def build_image_points(points: list[Point3D]) -> tuple[dict[int, list[tuple[floa
     return image_points, image_point_indices
 
 
+def parse_image_id_by_source_id(photogroup: ET.Element) -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    for photo in photogroup.findall("Photo"):
+        source_id = int(text(photo, "Id"))
+        if has_complete_pose(photo):
+            mapping[source_id] = len(mapping) + 1
+    return mapping
+
+
 def main() -> None:
     args = parse_args()
     input_path = args.input.resolve()
@@ -279,20 +304,35 @@ def main() -> None:
 
     camera = parse_camera(photogroup, args.camera_model)
     images = parse_images(photogroup)
-    points = parse_points(block)
+    image_id_by_source_id = parse_image_id_by_source_id(photogroup)
+    points = parse_points(block, image_id_by_source_id)
     image_points, image_point_indices = build_image_points(points)
+    references = parse_spatial_references(root)
+    target_srs_id = int(text(block, "SRSId"))
+    gcps = parse_ground_control_points(
+        block,
+        image_id_by_source_id,
+        references,
+        target_srs_id,
+        lambda x, y: (x, y),
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_cameras(output_dir / "cameras.txt", camera)
     write_images(output_dir / "images.txt", images, image_points)
     write_points(output_dir / "points3D.txt", points, image_point_indices)
+    if gcps:
+        write_gcp_files(output_dir / "gcp.txt", output_dir / "gcp_observations.txt", gcps)
 
     measurement_count = sum(len(point.observations) for point in points)
+    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote COLMAP text model to {output_dir}")
     print(f"  cameras: 1")
     print(f"  images: {len(images)}")
     print(f"  points3D: {len(points)}")
     print(f"  observations: {measurement_count}")
+    print(f"  gcps: {len(gcps)}")
+    print(f"  gcp observations: {gcp_observations}")
     if args.camera_model == "OPENCV":
         print("  note: XML K3 was dropped; use --camera-model FULL_OPENCV to keep it.")
 

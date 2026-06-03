@@ -92,3 +92,31 @@ where:
 
 PVL-BA stores undistorted image measurements and does not include distortion parameters in the four-file problem. If the source data contains distorted measurements, they should be undistorted before writing `Feature.txt`.
 
+## Optional GCP Extension
+
+PVL-BA problems may include two optional sidecar files:
+
+```text
+gcp.txt
+gcp_observations.txt
+```
+
+`gcp.txt` stores one ground control or check point per row:
+
+```text
+GCP_ID NAME X Y Z H_ACC V_ACC IS_CHECK_POINT SOURCE_SRS_ID SOURCE_X SOURCE_Y SOURCE_Z CATEGORY POINT_TYPE
+```
+
+where `X Y Z` are expressed in the same world coordinate system as `XYZ.txt` and `Cam-<num_images>-.txt`. `SOURCE_X SOURCE_Y SOURCE_Z` preserve the original GCP coordinates from the source file. `IS_CHECK_POINT` is `1` for check points and `0` for control points.
+
+`gcp_observations.txt` stores image measurements:
+
+```text
+GCP_ID N image_idx_1 u_1 v_1 image_idx_2 u_2 v_2 ...
+```
+
+For PVL-BA, GCP image coordinates are undistorted pixel coordinates, using the same convention as `Feature.txt`.
+
+## Invalid Photos
+
+Source photos without a complete pose are not part of the BA problem. Converters should skip these photos and filter out tie point or GCP measurements that reference them. Image indices in `Feature.txt` and `gcp_observations.txt` are compact 0-based indices after filtering.

@@ -2,6 +2,8 @@
 
 Convert BlocksExchange XML files, commonly named `AT.xml`, to the classic BAL single-file format used by the Ceres Solver examples.
 
+The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
+
 ## BAL Layout
 
 The output file uses:
@@ -73,3 +75,18 @@ Verify:
 ```powershell
 python .\verify_bal.py --input path\to\problem.bal
 ```
+
+## Invalid Photos and GCPs
+
+Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and BAL camera indices are compact 0-based indices after filtering.
+
+Classic BAL does not define GCP records, so GCPs are exported as sidecar files next to the BAL file:
+
+```text
+problem.gcp.txt
+problem.gcp_observations.txt
+```
+
+GCP object coordinates are transformed into the block SRS so they can be optimized with the local ENU BA problem. GCP observation coordinates follow the selected BAL mode: normalized camera coordinates for `--mode normalized`, or centered undistorted pixels for `--mode pixel`.
+
+The verifier reports tie point residuals and, when sidecar files exist, GCP residuals.

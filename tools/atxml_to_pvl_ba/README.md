@@ -9,7 +9,7 @@ XYZ.txt
 Feature.txt
 ```
 
-The converter uses only the Python standard library.
+The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
 
 ## Target Format
 
@@ -71,6 +71,19 @@ ez = euler_angles[2]
 
 `AT.xml` tie point measurements are distorted pixel coordinates. This converter undistorts each measurement before writing `Feature.txt`, because the target four-file format uses already-undistorted coordinates.
 
+Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and output image indices are compact 0-based row indices after filtering.
+
+## GCP Extension
+
+If the input contains `<ControlPoints>`, the converter writes:
+
+```text
+gcp.txt
+gcp_observations.txt
+```
+
+GCP object coordinates are transformed into the block SRS so they can be optimized with the ENU BA problem. For `EPSG:*` GCP coordinates and an `ENU:lat,lon[,h]` block SRS, the converter uses `pyproj` followed by an ECEF-to-ENU transform. GCP image observations are undistorted pixel coordinates, matching `Feature.txt`.
+
 ## Usage
 
 ```powershell
@@ -84,3 +97,5 @@ Verify an exported dataset:
 ```powershell
 python .\verify_pvl_ba.py --input-dir path\to\PVL_BA_OUTPUT
 ```
+
+The verifier reports tie point residuals and, when sidecar files exist, GCP residuals.

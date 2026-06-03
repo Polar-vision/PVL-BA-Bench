@@ -5,10 +5,18 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    has_complete_pose,
+    parse_ground_control_points,
+    parse_spatial_references,
+    write_gcp_files,
+)
 
 @dataclass(frozen=True)
 class Intrinsics:
@@ -79,17 +87,17 @@ def parse_rotation(rotation: ET.Element) -> list[list[float]]:
 
 def parse_cameras(photogroup: ET.Element) -> dict[int, Camera]:
     cameras: dict[int, Camera] = {}
-    for index, photo in enumerate(photogroup.findall("Photo")):
+    for photo in photogroup.findall("Photo"):
         source_id = int(text(photo, "Id"))
+        if not has_complete_pose(photo):
+            continue
         pose = photo.find("Pose")
-        if pose is None:
-            raise ValueError(f"Photo {source_id} has no Pose")
+        assert pose is not None
         rotation_element = pose.find("Rotation")
         center_element = pose.find("Center")
-        if rotation_element is None or center_element is None:
-            raise ValueError(f"Photo {source_id} has incomplete Pose")
+        assert rotation_element is not None and center_element is not None
         center = tuple(ftext(center_element, axis) for axis in ("x", "y", "z"))
-        cameras[source_id] = Camera(source_id, index, parse_rotation(rotation_element), center)
+        cameras[source_id] = Camera(source_id, len(cameras), parse_rotation(rotation_element), center)
     return cameras
 
 
@@ -106,6 +114,8 @@ def parse_points(block: ET.Element, cameras: dict[int, Camera], intrinsics: Intr
         observations = []
         for measurement in tiepoint.findall("Measurement"):
             source_id = int(text(measurement, "PhotoId"))
+            if source_id not in cameras:
+                continue
             u_distorted = ftext(measurement, "x")
             v_distorted = ftext(measurement, "y")
             u, v = undistort_pixel(u_distorted, v_distorted, intrinsics, iterations)
@@ -116,9 +126,23 @@ def parse_points(block: ET.Element, cameras: dict[int, Camera], intrinsics: Intr
                 x = u - intrinsics.cx
                 y = v - intrinsics.cy
             observations.append((cameras[source_id].index, x, y))
-        observations.sort(key=lambda observation: observation)
-        points.append(Point(xyz, observations))
+        if len(observations) >= 2:
+            observations.sort(key=lambda observation: observation)
+            points.append(Point(xyz, observations))
     return points
+
+
+def transform_observation_for_mode(
+    u_distorted: float,
+    v_distorted: float,
+    intrinsics: Intrinsics,
+    mode: str,
+    iterations: int,
+) -> tuple[float, float]:
+    u, v = undistort_pixel(u_distorted, v_distorted, intrinsics, iterations)
+    if mode == "normalized":
+        return (u - intrinsics.cx) / intrinsics.focal, (v - intrinsics.cy) / intrinsics.focal
+    return u - intrinsics.cx, v - intrinsics.cy
 
 
 def distort_normalized(x: float, y: float, intrinsics: Intrinsics) -> tuple[float, float]:
@@ -213,13 +237,28 @@ def main() -> None:
     intrinsics = parse_intrinsics(photogroup)
     cameras = parse_cameras(photogroup)
     points = parse_points(block, cameras, intrinsics, args.mode, args.undistort_iterations)
+    references = parse_spatial_references(root)
+    target_srs_id = int(text(block, "SRSId"))
+    camera_index_by_source_id = {source_id: camera.index for source_id, camera in cameras.items()}
+    gcps = parse_ground_control_points(
+        block,
+        camera_index_by_source_id,
+        references,
+        target_srs_id,
+        lambda x, y: transform_observation_for_mode(x, y, intrinsics, args.mode, args.undistort_iterations),
+    )
     write_bal(args.output, cameras, points, intrinsics, args.mode)
+    if gcps:
+        write_gcp_files(args.output.with_suffix(".gcp.txt"), args.output.with_suffix(".gcp_observations.txt"), gcps)
     observation_count = sum(len(point.observations) for point in points)
+    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote BAL file to {args.output.resolve()}")
     print(f"  mode: {args.mode}")
     print(f"  cameras: {len(cameras)}")
     print(f"  points: {len(points)}")
     print(f"  observations: {observation_count}")
+    print(f"  gcps: {len(gcps)}")
+    print(f"  gcp observations: {gcp_observations}")
 
 
 if __name__ == "__main__":

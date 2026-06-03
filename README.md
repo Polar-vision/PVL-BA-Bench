@@ -2,7 +2,7 @@
 
 Large-scale bundle adjustment benchmark datasets and conversion tools from **Polar-vision Lab**.
 
-This repository hosts the public tools and documentation for **PVL-BA-Bench**. The benchmark is designed for large-scale bundle adjustment, SfM, and photogrammetry research. The planned release contains 500 image blocks, including at least 100 ultra-large blocks with more than 50,000 images each. Some blocks include ground control points (GCPs).
+This repository hosts the public tools and documentation for **PVL-BA-Bench**. The benchmark is designed for large-scale bundle adjustment and photogrammetric optimization research. The planned release contains 500 image blocks, including at least 100 ultra-large blocks with more than 50,000 images each. Some blocks include ground control points (GCPs).
 
 ## Naming
 
@@ -59,6 +59,17 @@ python tools\atxml_to_pvl_ba\verify_pvl_ba.py --input-dir path\to\PVL_BA_OUTPUT
 
 The converter undistorts source image measurements before writing `Feature.txt`, because PVL-BA stores undistorted image coordinates.
 
+Photos without a complete `Pose` are treated as invalid and skipped. Tie point and GCP measurements that reference skipped photos are filtered out; tracks with fewer than two remaining tie observations are omitted.
+
+If `AT.xml` contains GCPs, the converter also writes:
+
+```text
+gcp.txt
+gcp_observations.txt
+```
+
+GCP coordinates are transformed into the BA coordinate system. For local ENU blocks, EPSG source coordinates are converted to geodetic coordinates with `pyproj` and then to the target ENU frame. If the ENU definition omits origin height, the tools use height `0` for the ENU origin.
+
 ### BlocksExchange XML to COLMAP
 
 An auxiliary converter to COLMAP text format is also included:
@@ -70,6 +81,8 @@ powershell -ExecutionPolicy Bypass -File tools\atxml_to_colmap\run.ps1 `
 ```
 
 See [tools/atxml_to_colmap](tools/atxml_to_colmap) for details.
+
+For COLMAP exports, `gcp.txt` and `gcp_observations.txt` are written as sidecar files when GCPs are present. The GCP observations remain in distorted pixel coordinates to match the COLMAP camera model.
 
 ### BlocksExchange XML to BAL
 
@@ -83,6 +96,8 @@ powershell -ExecutionPolicy Bypass -File tools\atxml_to_bal\run.ps1 `
 ```
 
 See [tools/atxml_to_bal](tools/atxml_to_bal) for details.
+
+For BAL exports, GCP sidecars are written next to the BAL file as `problem.gcp.txt` and `problem.gcp_observations.txt`. Their observation coordinates follow the selected BAL mode (`normalized` or `pixel`).
 
 ### COLMAP to PVL-BA
 
@@ -100,7 +115,13 @@ See [tools/colmap_to_pvl_ba](tools/colmap_to_pvl_ba) for details.
 
 ## Input Format
 
-`AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software.
+`AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software, including Daspatial Reconstruction Master outputs.
+
+When GCPs are present, the conversion tools require `pyproj` for cross-SRS coordinate transforms:
+
+```powershell
+pip install pyproj
+```
 
 ## Repository Status
 

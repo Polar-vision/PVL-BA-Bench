@@ -6,7 +6,7 @@ Convert a BlocksExchange `AT.xml` aerotriangulation result into COLMAP text mode
 - `images.txt`
 - `points3D.txt`
 
-The converter is written with the Python standard library only.
+The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
 
 ## Pose convention
 
@@ -57,4 +57,23 @@ Use full distortion export:
 
 ```powershell
 python .\atxml_to_colmap.py --input path\to\AT.xml --output path\to\COLMAP_TEXT_MODEL_FULL --camera-model FULL_OPENCV
+```
+
+## Invalid Photos and GCPs
+
+Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and COLMAP `IMAGE_ID` values are compact positive IDs after filtering.
+
+If the input contains `<ControlPoints>`, the converter writes sidecar files:
+
+```text
+gcp.txt
+gcp_observations.txt
+```
+
+GCP object coordinates are transformed into the block SRS so they can be optimized with the local ENU BA problem. GCP image observations remain distorted pixel coordinates, matching the COLMAP camera model written in `cameras.txt`.
+
+Verify GCP sidecars:
+
+```powershell
+python .\verify_colmap_gcp.py --input-dir path\to\COLMAP_TEXT_MODEL_FULL
 ```
