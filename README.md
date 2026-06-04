@@ -19,7 +19,7 @@ problem-i<images>-p<points>-o<observations>-g<gcps>
 For controlled-quality variants, append the target initial RMSE:
 
 ```text
-problem-i507-p40315-o139534-g3-rmse050p00px
+problem-i507-p40315-o139534-g3-init-rmse050p00px
 ```
 
 This is preferred over bare positional names such as `problem-507-40315-139534-3`, because each count remains self-describing.
@@ -146,11 +146,10 @@ Generate noisy PVL-BA datasets with controlled initial RMSE:
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
   -InputDir path\to\PVL_BA_OUTPUT `
-  -OutputRoot path\to\QUALITY_VARIANTS `
-  -TargetRmse 5,10,50,100
+  -OutputRoot path\to\QUALITY_VARIANTS
 ```
 
-Noise is applied to `Feature.txt` image observations in PVL-BA, not to COLMAP observations. PVL-BA stores undistorted BA measurements, so target initial RMSE levels are direct and comparable across datasets. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
+The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. Noise is applied to `Feature.txt` image observations in PVL-BA, not to COLMAP observations. PVL-BA stores undistorted BA measurements, so target initial RMSE levels are direct and comparable across datasets. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
 
 ## Input Format
 

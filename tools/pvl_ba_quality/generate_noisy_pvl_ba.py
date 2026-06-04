@@ -27,15 +27,35 @@ class ObservationRef:
     noise: tuple[float, float]
 
 
+MAIN_RMSE_PRESET = (2.0, 5.0, 10.0, 20.0, 50.0, 100.0)
+STRESS_RMSE_PRESET = (200.0, 500.0)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", required=True, type=Path, help="Input PVL-BA dataset directory")
     parser.add_argument("--output-root", required=True, type=Path, help="Directory where noisy datasets are created")
-    parser.add_argument("--target-rmse", required=True, type=float, nargs="+", help="Target initial RMSE values in pixels")
+    parser.add_argument("--target-rmse", type=float, nargs="+", help="Target initial RMSE values in pixels")
+    parser.add_argument(
+        "--preset",
+        choices=("main", "stress", "all"),
+        default="main",
+        help="Target-RMSE preset used when --target-rmse is omitted.",
+    )
     parser.add_argument("--seed", type=int, default=20260603)
     parser.add_argument("--prefix", default="problem")
     parser.add_argument("--include-gcp-observations", action="store_true", help="Also perturb gcp_observations.txt")
     return parser.parse_args()
+
+
+def target_rmse_values(args: argparse.Namespace) -> list[float]:
+    if args.target_rmse:
+        return args.target_rmse
+    if args.preset == "main":
+        return list(MAIN_RMSE_PRESET)
+    if args.preset == "stress":
+        return list(STRESS_RMSE_PRESET)
+    return list(MAIN_RMSE_PRESET + STRESS_RMSE_PRESET)
 
 
 def rotation_from_euler(ey: float, ex: float, ez: float) -> list[list[float]]:
@@ -139,6 +159,10 @@ def collect_observations(
     return refs, math.sqrt(sum_squared / len(refs))
 
 
+def mean_focal(cameras: list[Camera]) -> float:
+    return sum((camera.intrinsics[0] + camera.intrinsics[1]) * 0.5 for camera in cameras) / len(cameras)
+
+
 def solve_noise_scale(refs: list[ObservationRef], target_rmse: float) -> float:
     count = len(refs)
     a = sum(ref.noise[0] * ref.noise[0] + ref.noise[1] * ref.noise[1] for ref in refs)
@@ -185,7 +209,7 @@ def dataset_slug(prefix: str, image_count: int, point_count: int, observation_co
     base = f"{prefix}-i{image_count}-p{point_count}-o{observation_count}-g{gcp_count}"
     if rmse is None:
         return base
-    return f"{base}-rmse{rmse:06.2f}px".replace(".", "p")
+    return f"{base}-init-rmse{rmse:06.2f}px".replace(".", "p")
 
 
 def count_gcps(input_dir: Path) -> int:
@@ -210,12 +234,13 @@ def main() -> None:
     refs, base_rmse = collect_observations(points, tracks, cameras, rng)
     observation_count = len(refs)
     gcp_count = count_gcps(args.input_dir)
+    focal = mean_focal(cameras)
     base_name = dataset_slug(args.prefix, len(cameras), len(points), observation_count, gcp_count)
     print(f"base dataset name: {base_name}")
     print(f"base rmse: {base_rmse:.6f} px")
 
     args.output_root.mkdir(parents=True, exist_ok=True)
-    for target_rmse in args.target_rmse:
+    for target_rmse in target_rmse_values(args):
         if target_rmse <= base_rmse:
             raise ValueError(f"Target RMSE {target_rmse} must be larger than base RMSE {base_rmse:.6f}")
         local_rng = random.Random(f"{args.seed}:{target_rmse}")
@@ -244,9 +269,12 @@ def main() -> None:
             "source": str(args.input_dir.resolve()),
             "dataset_name": output_dir.name,
             "base_rmse_px": base_rmse,
+            "base_rmse_normalized": base_rmse / focal,
             "target_rmse_px": target_rmse,
+            "target_rmse_normalized": target_rmse / focal,
             "noise_model": "isotropic Gaussian image-observation noise, globally scaled to target tie-point RMSE",
             "noise_scale_px": scale,
+            "noise_scale_normalized": scale / focal,
             "seed": args.seed,
             "images": len(cameras),
             "points": len(points),

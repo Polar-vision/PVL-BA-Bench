@@ -5,8 +5,10 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$OutputRoot,
 
-    [Parameter(Mandatory=$true)]
     [double[]]$TargetRmse,
+
+    [ValidateSet("main", "stress", "all")]
+    [string]$Preset = "main",
 
     [int]$Seed = 20260603,
     [string]$Prefix = "problem",
@@ -19,9 +21,16 @@ $argsList = @(
     "--input-dir", $InputDir,
     "--output-root", $OutputRoot,
     "--seed", "$Seed",
-    "--prefix", $Prefix,
-    "--target-rmse"
-) + ($TargetRmse | ForEach-Object { "$_" })
+    "--prefix", $Prefix
+)
+
+if ($TargetRmse -and $TargetRmse.Count -gt 0) {
+    $argsList += "--target-rmse"
+    $argsList += ($TargetRmse | ForEach-Object { "$_" })
+} else {
+    $argsList += "--preset"
+    $argsList += $Preset
+}
 
 if ($IncludeGcpObservations) {
     $argsList += "--include-gcp-observations"
