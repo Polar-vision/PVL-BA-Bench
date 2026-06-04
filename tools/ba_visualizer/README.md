@@ -83,3 +83,4 @@ It groups `2, 5, 10, 20, 50, 100 px` as the main benchmark and `200, 500 px` as 
 - The viewer maps ENU-style world coordinates to a Z-up scene for easier inspection.
 - For PVL-BA quality variants, the side panel displays current RMSE and target RMSE from `noise_metadata.json`.
 - The linked quality viewer also reports per-level RMSE, residual percentiles, GCP RMSE, and negative-depth counts.
+- Use the `Frustum size` slider to resize camera frustums interactively without regenerating the viewer.

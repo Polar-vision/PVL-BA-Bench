@@ -339,6 +339,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <label><span>Original overlay</span><input id="toggleReference" type="checkbox"></label>
       <label><span>Point size</span><input id="pointSize" type="range" min="0.01" max="0.35" value="0.08" step="0.01"></label>
       <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.8" step="0.05"></label>
+      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="1" step="0.05"></label>
       <div class="row"><button class="view-button" id="resetView" title="Reset view">H</button><button class="view-button" id="topView" title="Top view">T</button></div>
     </section>
     <section class="section">
@@ -376,6 +377,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       reference: false,
       pointSize: 0.08,
       cameraOpacity: 0.8,
+      frustumScale: 1.0,
     };
 
     document.getElementById('source').textContent = `${payload.format} - ${payload.source}`;
@@ -435,15 +437,37 @@ HTML_TEMPLATE = r"""<!doctype html>
         sizeAttenuation: true,
       });
       const centers = new THREE.Points(centerGeometry, centerMaterial);
+      const baseFrustumPositions = new Float32Array(data.cameras.frustumVertices.flat());
       const frustumGeometry = new THREE.BufferGeometry();
-      frustumGeometry.setAttribute('position', new THREE.Float32BufferAttribute(data.cameras.frustumVertices.flat(), 3));
+      frustumGeometry.setAttribute('position', new THREE.BufferAttribute(baseFrustumPositions.slice(), 3));
       const frustumMaterial = new THREE.LineBasicMaterial({
         color: reference ? 0xdce3ea : 0x52c7b8,
         transparent: true,
         opacity: reference ? 0.32 : state.cameraOpacity,
       });
       const frustums = new THREE.LineSegments(frustumGeometry, frustumMaterial);
-      return { centers, frustums };
+      return { centers, frustums, baseFrustumPositions };
+    }
+
+    function setFrustumScale(handles, scale) {
+      if (!handles) return;
+      const attribute = handles.frustums.geometry.getAttribute('position');
+      const positions = attribute.array;
+      const base = handles.baseFrustumPositions;
+      const floatsPerFrustum = 16 * 3;
+      for (let offset = 0; offset < base.length; offset += floatsPerFrustum) {
+        const centerX = base[offset];
+        const centerY = base[offset + 1];
+        const centerZ = base[offset + 2];
+        const end = Math.min(offset + floatsPerFrustum, base.length);
+        for (let index = offset; index < end; index += 3) {
+          positions[index] = centerX + (base[index] - centerX) * scale;
+          positions[index + 1] = centerY + (base[index + 1] - centerY) * scale;
+          positions[index + 2] = centerZ + (base[index + 2] - centerZ) * scale;
+        }
+      }
+      attribute.needsUpdate = true;
+      handles.frustums.geometry.computeBoundingSphere();
     }
 
     function makeGcpGroup(data, reference=false) {
@@ -477,6 +501,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         cameraCenters: cameraObjects.centers,
         frustums: cameraObjects.frustums,
         frustumMaterial: cameraObjects.frustums.material,
+        baseFrustumPositions: cameraObjects.baseFrustumPositions,
         gcpGroup,
         reference,
       };
@@ -490,6 +515,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         activeHandles.gcpGroup.visible = state.gcps;
         activeHandles.pointMaterial.size = state.pointSize;
         activeHandles.frustumMaterial.opacity = state.cameraOpacity;
+        setFrustumScale(activeHandles, state.frustumScale);
       }
       if (referenceHandles) {
         const showReference = state.reference && activeIndex !== referenceIndex;
@@ -499,6 +525,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         referenceHandles.frustums.visible = showReference && state.cameras;
         referenceHandles.gcpGroup.visible = showReference && state.gcps;
         referenceHandles.pointMaterial.size = state.pointSize * 0.75;
+        setFrustumScale(referenceHandles, state.frustumScale);
       }
     }
 
@@ -618,6 +645,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     document.getElementById('toggleReference').addEventListener('change', event => { state.reference = event.target.checked; applyVisibility(); });
     document.getElementById('pointSize').addEventListener('input', event => { state.pointSize = Number(event.target.value); applyVisibility(); });
     document.getElementById('cameraOpacity').addEventListener('input', event => { state.cameraOpacity = Number(event.target.value); applyVisibility(); });
+    document.getElementById('frustumScale').addEventListener('input', event => { state.frustumScale = Number(event.target.value); applyVisibility(); });
     document.getElementById('resetView').addEventListener('click', () => resetView(false));
     document.getElementById('topView').addEventListener('click', () => resetView(true));
 

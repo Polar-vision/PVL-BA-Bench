@@ -530,6 +530,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <label><span>GCPs</span><input id="toggleGcps" type="checkbox" checked></label>
       <label><span>Point size</span><input id="pointSize" type="range" min="0.01" max="0.35" value="0.08" step="0.01"></label>
       <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.8" step="0.05"></label>
+      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="1" step="0.05"></label>
       <div class="row"><button id="resetView" title="Reset view">H</button><button id="topView" title="Top view">T</button></div>
     </section>
     <section class="section">
@@ -613,11 +614,31 @@ HTML_TEMPLATE = r"""<!doctype html>
     const cameraCenters = new THREE.Points(cameraCenterGeometry, cameraCenterMaterial);
     scene.add(cameraCenters);
 
+    const baseFrustumPositions = new Float32Array(data.cameras.frustumVertices.flat());
     const frustumGeometry = new THREE.BufferGeometry();
-    frustumGeometry.setAttribute('position', new THREE.Float32BufferAttribute(data.cameras.frustumVertices.flat(), 3));
+    frustumGeometry.setAttribute('position', new THREE.BufferAttribute(baseFrustumPositions.slice(), 3));
     const frustumMaterial = new THREE.LineBasicMaterial({ color: 0x52c7b8, transparent: true, opacity: 0.8 });
     const frustums = new THREE.LineSegments(frustumGeometry, frustumMaterial);
     scene.add(frustums);
+
+    function setFrustumScale(scale) {
+      const attribute = frustumGeometry.getAttribute('position');
+      const positions = attribute.array;
+      const floatsPerFrustum = 16 * 3;
+      for (let offset = 0; offset < baseFrustumPositions.length; offset += floatsPerFrustum) {
+        const centerX = baseFrustumPositions[offset];
+        const centerY = baseFrustumPositions[offset + 1];
+        const centerZ = baseFrustumPositions[offset + 2];
+        const end = Math.min(offset + floatsPerFrustum, baseFrustumPositions.length);
+        for (let index = offset; index < end; index += 3) {
+          positions[index] = centerX + (baseFrustumPositions[index] - centerX) * scale;
+          positions[index + 1] = centerY + (baseFrustumPositions[index + 1] - centerY) * scale;
+          positions[index + 2] = centerZ + (baseFrustumPositions[index + 2] - centerZ) * scale;
+        }
+      }
+      attribute.needsUpdate = true;
+      frustumGeometry.computeBoundingSphere();
+    }
 
     const gcpGroup = new THREE.Group();
     const gcpGeometry = new THREE.BufferGeometry();
@@ -647,6 +668,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     document.getElementById('toggleGcps').addEventListener('change', event => gcpGroup.visible = event.target.checked);
     document.getElementById('pointSize').addEventListener('input', event => pointMaterial.size = Number(event.target.value));
     document.getElementById('cameraOpacity').addEventListener('input', event => frustumMaterial.opacity = Number(event.target.value));
+    document.getElementById('frustumScale').addEventListener('input', event => setFrustumScale(Number(event.target.value)));
     document.getElementById('resetView').addEventListener('click', () => resetView(false));
     document.getElementById('topView').addEventListener('click', () => resetView(true));
 
