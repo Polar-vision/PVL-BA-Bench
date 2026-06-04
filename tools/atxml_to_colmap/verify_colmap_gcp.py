@@ -27,16 +27,19 @@ def mat_vec(matrix: list[list[float]], vector: tuple[float, float, float]) -> tu
     return tuple(sum(matrix[i][j] * vector[j] for j in range(3)) for i in range(3))
 
 
-def read_camera(path: Path) -> tuple[str, tuple[float, ...]]:
+def read_cameras(path: Path) -> dict[int, tuple[str, tuple[float, ...]]]:
+    cameras = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         tokens = line.split()
-        return tokens[1], tuple(map(float, tokens[4:]))
-    raise ValueError("No camera found")
+        cameras[int(tokens[0])] = (tokens[1], tuple(map(float, tokens[4:])))
+    if not cameras:
+        raise ValueError("No camera found")
+    return cameras
 
 
-def read_images(path: Path) -> dict[int, tuple[list[list[float]], tuple[float, float, float]]]:
+def read_images(path: Path) -> dict[int, tuple[list[list[float]], tuple[float, float, float], int]]:
     images = {}
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
     for index in range(0, len(lines), 2):
@@ -44,7 +47,8 @@ def read_images(path: Path) -> dict[int, tuple[list[list[float]], tuple[float, f
         image_id = int(tokens[0])
         qvec = tuple(map(float, tokens[1:5]))
         tvec = tuple(map(float, tokens[5:8]))
-        images[image_id] = (qvec_to_rotation(qvec), tvec)
+        camera_id = int(tokens[8])
+        images[image_id] = (qvec_to_rotation(qvec), tvec, camera_id)
     return images
 
 
@@ -84,7 +88,7 @@ def print_stats(errors: list[float]) -> None:
 
 def main() -> None:
     args = parse_args()
-    model, params = read_camera(args.input_dir / "cameras.txt")
+    cameras = read_cameras(args.input_dir / "cameras.txt")
     images = read_images(args.input_dir / "images.txt")
     gcps = []
     for line in (args.input_dir / "gcp.txt").read_text(encoding="utf-8").splitlines():
@@ -104,7 +108,8 @@ def main() -> None:
             image_id = int(tokens[2 + 3 * observation_index])
             observed_x = float(tokens[3 + 3 * observation_index])
             observed_y = float(tokens[4 + 3 * observation_index])
-            rotation, translation = images[image_id]
+            rotation, translation, camera_id = images[image_id]
+            model, params = cameras[camera_id]
             pc = mat_vec(rotation, point)
             pc = tuple(pc[index] + translation[index] for index in range(3))
             projected_x, projected_y = project_colmap(pc, model, params)

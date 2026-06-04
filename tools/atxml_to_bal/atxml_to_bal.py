@@ -36,6 +36,7 @@ class Camera:
     index: int
     rotation: list[list[float]]
     center: tuple[float, float, float]
+    intrinsics: Intrinsics
 
 
 @dataclass(frozen=True)
@@ -64,13 +65,27 @@ def ftext(parent: ET.Element, name: str) -> float:
     return float(text(parent, name))
 
 
+def focal_length_pixels(photogroup: ET.Element) -> float:
+    value = photogroup.findtext("FocalLengthPixels")
+    if value is not None:
+        return float(value)
+    dimensions = photogroup.find("ImageDimensions")
+    if dimensions is None:
+        raise ValueError("Missing ImageDimensions")
+    sensor_size = ftext(photogroup, "SensorSize")
+    if sensor_size == 0.0:
+        raise ValueError("SensorSize must be nonzero when FocalLengthPixels is missing")
+    max_dimension = max(int(text(dimensions, "Width")), int(text(dimensions, "Height")))
+    return ftext(photogroup, "FocalLength") / sensor_size * max_dimension
+
+
 def parse_intrinsics(photogroup: ET.Element) -> Intrinsics:
     principal = photogroup.find("PrincipalPoint")
     distortion = photogroup.find("Distortion")
     if principal is None or distortion is None:
         raise ValueError("Missing PrincipalPoint or Distortion")
     return Intrinsics(
-        focal=ftext(photogroup, "FocalLengthPixels"),
+        focal=focal_length_pixels(photogroup),
         cx=ftext(principal, "x"),
         cy=ftext(principal, "y"),
         k1=ftext(distortion, "K1"),
@@ -85,7 +100,7 @@ def parse_rotation(rotation: ET.Element) -> list[list[float]]:
     return [[ftext(rotation, f"M_{i}{j}") for j in range(3)] for i in range(3)]
 
 
-def parse_cameras(photogroup: ET.Element) -> dict[int, Camera]:
+def parse_cameras(photogroup: ET.Element, intrinsics: Intrinsics, start_index: int) -> dict[int, Camera]:
     cameras: dict[int, Camera] = {}
     for photo in photogroup.findall("Photo"):
         source_id = int(text(photo, "Id"))
@@ -97,11 +112,26 @@ def parse_cameras(photogroup: ET.Element) -> dict[int, Camera]:
         center_element = pose.find("Center")
         assert rotation_element is not None and center_element is not None
         center = tuple(ftext(center_element, axis) for axis in ("x", "y", "z"))
-        cameras[source_id] = Camera(source_id, len(cameras), parse_rotation(rotation_element), center)
+        cameras[source_id] = Camera(source_id, start_index + len(cameras), parse_rotation(rotation_element), center, intrinsics)
     return cameras
 
 
-def parse_points(block: ET.Element, cameras: dict[int, Camera], intrinsics: Intrinsics, mode: str, iterations: int) -> list[Point]:
+def parse_photogroups(block: ET.Element) -> dict[int, Camera]:
+    photogroups = block.findall("Photogroups/Photogroup")
+    if not photogroups:
+        raise ValueError("Missing Photogroup")
+    cameras: dict[int, Camera] = {}
+    for photogroup in photogroups:
+        intrinsics = parse_intrinsics(photogroup)
+        group_cameras = parse_cameras(photogroup, intrinsics, len(cameras))
+        for source_id, camera in group_cameras.items():
+            if source_id in cameras:
+                raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+            cameras[source_id] = camera
+    return cameras
+
+
+def parse_points(block: ET.Element, cameras: dict[int, Camera], mode: str, iterations: int) -> list[Point]:
     tiepoints = block.find("TiePoints")
     if tiepoints is None:
         raise ValueError("Missing TiePoints")
@@ -116,6 +146,7 @@ def parse_points(block: ET.Element, cameras: dict[int, Camera], intrinsics: Intr
             source_id = int(text(measurement, "PhotoId"))
             if source_id not in cameras:
                 continue
+            intrinsics = cameras[source_id].intrinsics
             u_distorted = ftext(measurement, "x")
             v_distorted = ftext(measurement, "y")
             u, v = undistort_pixel(u_distorted, v_distorted, intrinsics, iterations)
@@ -206,10 +237,9 @@ def translation_from_center(rotation: list[list[float]], center: tuple[float, fl
     return (-rc[0], -rc[1], -rc[2])
 
 
-def write_bal(path: Path, cameras: dict[int, Camera], points: list[Point], intrinsics: Intrinsics, mode: str) -> None:
+def write_bal(path: Path, cameras: dict[int, Camera], points: list[Point], mode: str) -> None:
     ordered_cameras = sorted(cameras.values(), key=lambda camera: camera.index)
     observations = [(camera_index, point_index, x, y) for point_index, point in enumerate(points) for camera_index, x, y in point.observations]
-    focal = 1.0 if mode == "normalized" else intrinsics.focal
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"{len(ordered_cameras)} {len(points)} {len(observations)}\n")
@@ -218,6 +248,7 @@ def write_bal(path: Path, cameras: dict[int, Camera], points: list[Point], intri
         for camera in ordered_cameras:
             angle_axis = rotation_to_angle_axis(camera.rotation)
             translation = translation_from_center(camera.rotation, camera.center)
+            focal = 1.0 if mode == "normalized" else camera.intrinsics.focal
             for value in (*angle_axis, *translation, focal, 0.0, 0.0):
                 fh.write(f"{value:.17g}\n")
         for point in points:
@@ -231,12 +262,8 @@ def main() -> None:
     block = root.find("Block")
     if block is None:
         raise ValueError("Missing Block")
-    photogroup = block.find("Photogroups/Photogroup")
-    if photogroup is None:
-        raise ValueError("Missing Photogroup")
-    intrinsics = parse_intrinsics(photogroup)
-    cameras = parse_cameras(photogroup)
-    points = parse_points(block, cameras, intrinsics, args.mode, args.undistort_iterations)
+    cameras = parse_photogroups(block)
+    points = parse_points(block, cameras, args.mode, args.undistort_iterations)
     references = parse_spatial_references(root)
     target_srs_id = int(text(block, "SRSId"))
     camera_index_by_source_id = {source_id: camera.index for source_id, camera in cameras.items()}
@@ -245,9 +272,11 @@ def main() -> None:
         camera_index_by_source_id,
         references,
         target_srs_id,
-        lambda x, y: transform_observation_for_mode(x, y, intrinsics, args.mode, args.undistort_iterations),
+        lambda source_id, x, y: transform_observation_for_mode(
+            x, y, cameras[source_id].intrinsics, args.mode, args.undistort_iterations
+        ),
     )
-    write_bal(args.output, cameras, points, intrinsics, args.mode)
+    write_bal(args.output, cameras, points, args.mode)
     if gcps:
         write_gcp_files(args.output.with_suffix(".gcp.txt"), args.output.with_suffix(".gcp_observations.txt"), gcps)
     observation_count = sum(len(point.observations) for point in points)

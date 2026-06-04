@@ -65,8 +65,22 @@ def ftext(parent: ET.Element, name: str) -> float:
     return float(text(parent, name))
 
 
+def focal_length_pixels(photogroup: ET.Element) -> float:
+    value = photogroup.findtext("FocalLengthPixels")
+    if value is not None:
+        return float(value)
+    dimensions = photogroup.find("ImageDimensions")
+    if dimensions is None:
+        raise ValueError("Missing ImageDimensions")
+    sensor_size = ftext(photogroup, "SensorSize")
+    if sensor_size == 0.0:
+        raise ValueError("SensorSize must be nonzero when FocalLengthPixels is missing")
+    max_dimension = max(int(text(dimensions, "Width")), int(text(dimensions, "Height")))
+    return ftext(photogroup, "FocalLength") / sensor_size * max_dimension
+
+
 def parse_intrinsics(photogroup: ET.Element) -> Intrinsics:
-    focal = ftext(photogroup, "FocalLengthPixels")
+    focal = focal_length_pixels(photogroup)
     principal = photogroup.find("PrincipalPoint")
     distortion = photogroup.find("Distortion")
     if principal is None or distortion is None:
@@ -88,7 +102,7 @@ def parse_rotation(rotation: ET.Element) -> list[list[float]]:
     return [[ftext(rotation, f"M_{i}{j}") for j in range(3)] for i in range(3)]
 
 
-def parse_photos(photogroup: ET.Element) -> dict[int, Photo]:
+def parse_photos(photogroup: ET.Element, group_id: int, start_index: int) -> dict[int, Photo]:
     photos: dict[int, Photo] = {}
     for photo in photogroup.findall("Photo"):
         source_id = int(text(photo, "Id"))
@@ -102,15 +116,39 @@ def parse_photos(photogroup: ET.Element) -> dict[int, Photo]:
         center = tuple(ftext(center_element, axis) for axis in ("x", "y", "z"))
         photos[source_id] = Photo(
             source_id=source_id,
-            row_index=len(photos),
-            group_id=1,
+            row_index=start_index + len(photos),
+            group_id=group_id,
             rotation=parse_rotation(rotation_element),
             center=center,
         )
     return photos
 
 
-def parse_tiepoints(block: ET.Element, photos: dict[int, Photo], intrinsics: Intrinsics, iterations: int) -> list[TiePoint]:
+def parse_photogroups(block: ET.Element) -> tuple[list[Intrinsics], dict[int, Photo], dict[int, Intrinsics]]:
+    photogroups = block.findall("Photogroups/Photogroup")
+    if not photogroups:
+        raise ValueError("Missing Photogroup")
+    intrinsics_by_group = []
+    photos: dict[int, Photo] = {}
+    intrinsics_by_photo_id: dict[int, Intrinsics] = {}
+    for group_index, photogroup in enumerate(photogroups, start=1):
+        intrinsics = parse_intrinsics(photogroup)
+        intrinsics_by_group.append(intrinsics)
+        group_photos = parse_photos(photogroup, group_index, len(photos))
+        for source_id, photo in group_photos.items():
+            if source_id in photos:
+                raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+            photos[source_id] = photo
+            intrinsics_by_photo_id[source_id] = intrinsics
+    return intrinsics_by_group, photos, intrinsics_by_photo_id
+
+
+def parse_tiepoints(
+    block: ET.Element,
+    photos: dict[int, Photo],
+    intrinsics_by_photo_id: dict[int, Intrinsics],
+    iterations: int,
+) -> list[TiePoint]:
     tiepoints_element = block.find("TiePoints")
     if tiepoints_element is None:
         raise ValueError("Missing TiePoints")
@@ -128,7 +166,7 @@ def parse_tiepoints(block: ET.Element, photos: dict[int, Photo], intrinsics: Int
                 continue
             xd = ftext(measurement, "x")
             yd = ftext(measurement, "y")
-            u, v = undistort_pixel(xd, yd, intrinsics, iterations)
+            u, v = undistort_pixel(xd, yd, intrinsics_by_photo_id[source_id], iterations)
             observations.append((photos[source_id].row_index, u, v))
         if len(observations) >= 2:
             tiepoints.append(TiePoint(xyz=xyz, observations=observations))
@@ -170,11 +208,12 @@ def euler_from_rotation(R: list[list[float]]) -> tuple[float, float, float]:
     return ey, ex, ez
 
 
-def write_cal(path: Path, intrinsics: Intrinsics) -> None:
+def write_cal(path: Path, intrinsics_by_group: list[Intrinsics]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as fh:
-        fh.write(f"{intrinsics.fx:.12f} 0 {intrinsics.cx:.12f}\n")
-        fh.write(f"0 {intrinsics.fy:.12f} {intrinsics.cy:.12f}\n")
-        fh.write("0 0 1\n")
+        for intrinsics in intrinsics_by_group:
+            fh.write(f"{intrinsics.fx:.12f} 0 {intrinsics.cx:.12f}\n")
+            fh.write(f"0 {intrinsics.fy:.12f} {intrinsics.cy:.12f}\n")
+            fh.write("0 0 1\n")
 
 
 def write_cam(path: Path, photos: dict[int, Photo]) -> None:
@@ -212,13 +251,9 @@ def main() -> None:
     block = root.find("Block")
     if block is None:
         raise ValueError("Missing Block")
-    photogroup = block.find("Photogroups/Photogroup")
-    if photogroup is None:
-        raise ValueError("Missing Photogroup")
 
-    intrinsics = parse_intrinsics(photogroup)
-    photos = parse_photos(photogroup)
-    tiepoints = parse_tiepoints(block, photos, intrinsics, args.undistort_iterations)
+    intrinsics_by_group, photos, intrinsics_by_photo_id = parse_photogroups(block)
+    tiepoints = parse_tiepoints(block, photos, intrinsics_by_photo_id, args.undistort_iterations)
     references = parse_spatial_references(root)
     target_srs_id = int(text(block, "SRSId"))
     photo_index_by_source_id = {source_id: photo.row_index for source_id, photo in photos.items()}
@@ -227,11 +262,11 @@ def main() -> None:
         photo_index_by_source_id,
         references,
         target_srs_id,
-        lambda x, y: undistort_pixel(x, y, intrinsics, args.undistort_iterations),
+        lambda source_id, x, y: undistort_pixel(x, y, intrinsics_by_photo_id[source_id], args.undistort_iterations),
     )
 
     args.output.mkdir(parents=True, exist_ok=True)
-    write_cal(args.output / "cal.txt", intrinsics)
+    write_cal(args.output / "cal.txt", intrinsics_by_group)
     write_cam(args.output / f"Cam-{len(photos)}-.txt", photos)
     write_xyz(args.output / "XYZ.txt", tiepoints)
     write_feature(args.output / "Feature.txt", tiepoints)
@@ -241,7 +276,7 @@ def main() -> None:
     observations = sum(len(tiepoint.observations) for tiepoint in tiepoints)
     gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote PVL-BA format to {args.output.resolve()}")
-    print(f"  intrinsics groups: 1")
+    print(f"  intrinsics groups: {len(intrinsics_by_group)}")
     print(f"  cameras: {len(photos)}")
     print(f"  points: {len(tiepoints)}")
     print(f"  observations: {observations}")

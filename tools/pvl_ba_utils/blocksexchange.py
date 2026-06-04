@@ -151,7 +151,7 @@ def parse_ground_control_points(
     photo_index_by_source_id: dict[int, int],
     references: dict[int, SpatialReference],
     target_srs_id: int,
-    observation_transform: Callable[[float, float], tuple[float, float]],
+    observation_transform: Callable[[int, float, float], tuple[float, float]],
 ) -> list[GroundControlPoint]:
     control_points = block.find("ControlPoints")
     if control_points is None:
@@ -171,7 +171,7 @@ def parse_ground_control_points(
             image_index = photo_index_by_source_id.get(source_photo_id)
             if image_index is None:
                 continue
-            x, y = observation_transform(ftext(measurement, "x"), ftext(measurement, "y"))
+            x, y = observation_transform(source_photo_id, ftext(measurement, "x"), ftext(measurement, "y"))
             observations.append(GcpObservation(image_index, x, y))
         observations.sort(key=lambda observation: (observation.image_index, observation.x, observation.y))
         gcps.append(

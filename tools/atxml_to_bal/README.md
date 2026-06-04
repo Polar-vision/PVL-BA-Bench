@@ -80,6 +80,8 @@ python .\verify_bal.py --input path\to\problem.bal
 
 Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and BAL camera indices are compact 0-based indices after filtering.
 
+Multiple `Photogroup` entries are supported. BAL stores one camera parameter block per image, so each camera block uses the intrinsic scale of its source photogroup.
+
 Classic BAL does not define GCP records, so GCPs are exported as sidecar files next to the BAL file:
 
 ```text

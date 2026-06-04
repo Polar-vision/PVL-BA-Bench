@@ -63,6 +63,8 @@ python .\atxml_to_colmap.py --input path\to\AT.xml --output path\to\COLMAP_TEXT_
 
 Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and COLMAP `IMAGE_ID` values are compact positive IDs after filtering.
 
+Multiple `Photogroup` entries are supported. Each photogroup is exported as one COLMAP camera, and each image row references its source photogroup's camera ID.
+
 If the input contains `<ControlPoints>`, the converter writes sidecar files:
 
 ```text

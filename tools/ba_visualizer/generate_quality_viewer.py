@@ -31,6 +31,7 @@ class QualityDataset:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-root", required=True, type=Path, help="Root directory containing PVL-BA quality variants")
+    parser.add_argument("--reference-dir", type=Path, help="Optional PVL-BA original/reference dataset directory")
     parser.add_argument("--output", required=True, type=Path, help="Output HTML file")
     parser.add_argument("--max-points", type=int, default=100_000, help="Maximum sparse points per quality level")
     parser.add_argument("--camera-stride", type=int, default=1, help="Embed every Nth camera frustum")
@@ -56,8 +57,23 @@ def rmse_from_name(name: str) -> tuple[str, float] | None:
     return match.group(1).lower(), integer_part + decimal_part
 
 
-def discover_datasets(input_root: Path, stress_threshold: float) -> list[QualityDataset]:
+def discover_datasets(input_root: Path, stress_threshold: float, reference_dir: Path | None = None) -> list[QualityDataset]:
     datasets: list[QualityDataset] = []
+    if reference_dir is not None:
+        if not is_pvl_ba_dir(reference_dir):
+            raise FileNotFoundError(f"Reference directory is not a PVL-BA dataset: {reference_dir}")
+        datasets.append(
+            QualityDataset(
+                path=reference_dir,
+                name=reference_dir.name,
+                label="original",
+                group="Reference",
+                sort_key=(0, -1.0, reference_dir.name),
+                target_rmse_px=None,
+                mode_tag="reference",
+                is_reference=True,
+            )
+        )
     for path in sorted(input_root.iterdir()):
         if not path.is_dir() or not is_pvl_ba_dir(path):
             continue
@@ -81,7 +97,7 @@ def discover_datasets(input_root: Path, stress_threshold: float) -> list[Quality
                     is_reference=False,
                 )
             )
-        elif "original" in name.lower() or "reference" in name.lower():
+        elif reference_dir is None and ("original" in name.lower() or "reference" in name.lower()):
             datasets.append(
                 QualityDataset(
                     path=path,
@@ -270,19 +286,38 @@ def global_bounds(datasets: list[dict]) -> dict:
     return {"min": min_bound, "max": max_bound, "center": center, "diagonal": diagonal}
 
 
-def build_quality_payload(input_root: Path, max_points: int, camera_stride: int, stress_threshold: float) -> dict:
-    discovered = discover_datasets(input_root, stress_threshold)
-    datasets = []
+def build_quality_payload(
+    input_root: Path,
+    max_points: int,
+    camera_stride: int,
+    stress_threshold: float,
+    reference_dir: Path | None = None,
+) -> dict:
+    discovered = discover_datasets(input_root, stress_threshold, reference_dir)
+    raw_items = []
     for dataset in discovered:
         payload = generate_viewer.build_pvl_payload(dataset.path.resolve(), max_points, camera_stride)
-        datasets.append(enrich_payload(payload, dataset, dataset.path.resolve()))
+        raw_items.append((dataset, payload, generate_viewer.read_pvl_cameras(dataset.path.resolve())))
+    datasets = [enrich_payload(payload, dataset, dataset.path.resolve()) for dataset, payload, _cameras in raw_items]
+    shared_bounds = global_bounds(datasets)
+    reference_index = next((index for index, dataset in enumerate(datasets) if dataset["isReference"]), 0)
+    reference_diagonal = datasets[reference_index]["bounds"]["diagonal"]
+    shared_diagonal = max(reference_diagonal, 1.0)
+    shared_frustum_scale = max(shared_diagonal * 0.025, 1.0)
+    for output_dataset, (_dataset, _payload, cameras) in zip(datasets, raw_items):
+        sampled_cameras = cameras[:: max(1, camera_stride)]
+        frustum_vertices = []
+        for camera in sampled_cameras:
+            frustum_vertices.extend(generate_viewer.pvl_frustum_segments(camera, shared_frustum_scale))
+        output_dataset["cameras"]["frustumVertices"] = frustum_vertices
+        output_dataset["stats"]["sharedFrustumScale"] = shared_frustum_scale
     return {
         "format": "PVL-BA quality set",
         "source": str(input_root.resolve()),
-        "bounds": global_bounds(datasets),
+        "bounds": shared_bounds,
         "groups": ["Reference", "Main Benchmark", "Stress Test"],
         "datasets": datasets,
-        "referenceIndex": next((index for index, dataset in enumerate(datasets) if dataset["isReference"]), 0),
+        "referenceIndex": reference_index,
     }
 
 
@@ -668,7 +703,13 @@ HTML_TEMPLATE = r"""<!doctype html>
 
 def main() -> None:
     args = parse_args()
-    payload = build_quality_payload(args.input_root.resolve(), args.max_points, args.camera_stride, args.stress_threshold)
+    payload = build_quality_payload(
+        args.input_root.resolve(),
+        args.max_points,
+        args.camera_stride,
+        args.stress_threshold,
+        args.reference_dir.resolve() if args.reference_dir else None,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload, separators=(",", ":")))
     args.output.write_text(html, encoding="utf-8", newline="\n")

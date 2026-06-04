@@ -73,6 +73,8 @@ ez = euler_angles[2]
 
 Photos without a complete `Pose` are skipped. Measurements that reference skipped photos are filtered out, and output image indices are compact 0-based row indices after filtering.
 
+Multiple `Photogroup` entries are supported. Each photogroup is written as one intrinsic block in `cal.txt`, and the final field in each `Cam-<N>-.txt` row is the 1-based intrinsic group ID.
+
 ## GCP Extension
 
 If the input contains `<ControlPoints>`, the converter writes:

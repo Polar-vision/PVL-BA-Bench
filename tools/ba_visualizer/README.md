@@ -62,6 +62,7 @@ For controlled-quality PVL-BA variants, generate a single linked viewer from the
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_quality.ps1 `
   -InputRoot ..\..\outputs\abs_at_quality_pvl_ba `
+  -ReferenceDir ..\..\outputs\abs_at_quality_pvl_ba\problem-i507-p40315-o139534-g3-original `
   -OutputHtml ..\..\outputs\abs_at_quality_pvl_ba\quality_linked_viewer.html
 ```
 
@@ -74,6 +75,8 @@ problem-i507-p40315-o139534-g3-init-rmse500p00px
 ```
 
 It groups `2, 5, 10, 20, 50, 100 px` as the main benchmark and `200, 500 px` as stress tests by default. Switching quality levels preserves the current 3D view and can overlay the original reference geometry for comparison.
+
+Use `--reference-dir` / `-ReferenceDir` when the original PVL-BA dataset is stored outside the quality-variant directory.
 
 ## Display
 

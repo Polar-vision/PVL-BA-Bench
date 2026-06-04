@@ -70,6 +70,16 @@ def ftext(parent: ET.Element, name: str) -> float:
     return float(text(parent, name))
 
 
+def focal_length_pixels(photogroup: ET.Element, width: int, height: int) -> float:
+    value = photogroup.findtext("FocalLengthPixels")
+    if value is not None:
+        return float(value)
+    sensor_size = ftext(photogroup, "SensorSize")
+    if sensor_size == 0.0:
+        raise ValueError("SensorSize must be nonzero when FocalLengthPixels is missing")
+    return ftext(photogroup, "FocalLength") / sensor_size * max(width, height)
+
+
 def matrix_from_rotation(rotation: ET.Element) -> list[list[float]]:
     return [[ftext(rotation, f"M_{i}{j}") for j in range(3)] for i in range(3)]
 
@@ -136,13 +146,13 @@ def color_to_rgb(color: ET.Element | None) -> tuple[int, int, int]:
     return tuple(channels)  # type: ignore[return-value]
 
 
-def parse_camera(photogroup: ET.Element, camera_model: str) -> Camera:
+def parse_camera(photogroup: ET.Element, camera_model: str, camera_id: int) -> Camera:
     dimensions = photogroup.find("ImageDimensions")
     if dimensions is None:
         raise ValueError("Missing ImageDimensions")
     width = int(text(dimensions, "Width"))
     height = int(text(dimensions, "Height"))
-    focal = ftext(photogroup, "FocalLengthPixels")
+    focal = focal_length_pixels(photogroup, width, height)
 
     principal = photogroup.find("PrincipalPoint")
     if principal is None:
@@ -163,12 +173,12 @@ def parse_camera(photogroup: ET.Element, camera_model: str) -> Camera:
         params = (focal, focal, cx, cy, k1, k2, p1, p2)
     else:
         params = (focal, focal, cx, cy, k1, k2, k3, 0.0, 0.0, 0.0, p1, p2)
-    return Camera(1, camera_model, width, height, params)
+    return Camera(camera_id, camera_model, width, height, params)
 
 
-def parse_images(photogroup: ET.Element) -> dict[int, Image]:
+def parse_images(photogroup: ET.Element, camera_id: int, start_image_id: int) -> dict[int, Image]:
     images: dict[int, Image] = {}
-    next_image_id = 1
+    next_image_id = start_image_id
     for photo in photogroup.findall("Photo"):
         source_id = int(text(photo, "Id"))
         if not has_complete_pose(photo):
@@ -187,8 +197,29 @@ def parse_images(photogroup: ET.Element) -> dict[int, Image]:
         tvec = (-rc[0], -rc[1], -rc[2])
         image_id = next_image_id
         next_image_id += 1
-        images[image_id] = Image(image_id, qvec, tvec, 1, image_name_from_path(image_path))
+        images[image_id] = Image(image_id, qvec, tvec, camera_id, image_name_from_path(image_path))
     return images
+
+
+def parse_photogroups(block: ET.Element, camera_model: str) -> tuple[dict[int, Camera], dict[int, Image], dict[int, int]]:
+    photogroups = block.findall("Photogroups/Photogroup")
+    if not photogroups:
+        raise ValueError("Missing Photogroup element")
+    cameras: dict[int, Camera] = {}
+    images: dict[int, Image] = {}
+    image_id_by_source_id: dict[int, int] = {}
+    for camera_id, photogroup in enumerate(photogroups, start=1):
+        cameras[camera_id] = parse_camera(photogroup, camera_model, camera_id)
+        group_images = parse_images(photogroup, camera_id, len(images) + 1)
+        for image_id, image in group_images.items():
+            images[image_id] = image
+        for photo in photogroup.findall("Photo"):
+            source_id = int(text(photo, "Id"))
+            if has_complete_pose(photo):
+                if source_id in image_id_by_source_id:
+                    raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+                image_id_by_source_id[source_id] = len(image_id_by_source_id) + 1
+    return cameras, images, image_id_by_source_id
 
 
 def parse_points(block: ET.Element, image_id_by_source_id: dict[int, int]) -> list[Point3D]:
@@ -221,13 +252,15 @@ def parse_points(block: ET.Element, image_id_by_source_id: dict[int, int]) -> li
     return points
 
 
-def write_cameras(path: Path, camera: Camera) -> None:
+def write_cameras(path: Path, cameras: dict[int, Camera]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write("# Camera list with one line of data per camera:\n")
         fh.write("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
-        fh.write("# Number of cameras: 1\n")
-        params = " ".join(format_float(value) for value in camera.params)
-        fh.write(f"{camera.camera_id} {camera.model} {camera.width} {camera.height} {params}\n")
+        fh.write(f"# Number of cameras: {len(cameras)}\n")
+        for camera_id in sorted(cameras):
+            camera = cameras[camera_id]
+            params = " ".join(format_float(value) for value in camera.params)
+            fh.write(f"{camera.camera_id} {camera.model} {camera.width} {camera.height} {params}\n")
 
 
 def write_images(path: Path, images: dict[int, Image], image_points: dict[int, list[tuple[float, float, int]]]) -> None:
@@ -277,15 +310,6 @@ def build_image_points(points: list[Point3D]) -> tuple[dict[int, list[tuple[floa
     return image_points, image_point_indices
 
 
-def parse_image_id_by_source_id(photogroup: ET.Element) -> dict[int, int]:
-    mapping: dict[int, int] = {}
-    for photo in photogroup.findall("Photo"):
-        source_id = int(text(photo, "Id"))
-        if has_complete_pose(photo):
-            mapping[source_id] = len(mapping) + 1
-    return mapping
-
-
 def main() -> None:
     args = parse_args()
     input_path = args.input.resolve()
@@ -298,13 +322,8 @@ def main() -> None:
     block = root.find("Block")
     if block is None:
         raise ValueError("Missing Block element")
-    photogroup = block.find("Photogroups/Photogroup")
-    if photogroup is None:
-        raise ValueError("Missing Photogroup element")
 
-    camera = parse_camera(photogroup, args.camera_model)
-    images = parse_images(photogroup)
-    image_id_by_source_id = parse_image_id_by_source_id(photogroup)
+    cameras, images, image_id_by_source_id = parse_photogroups(block, args.camera_model)
     points = parse_points(block, image_id_by_source_id)
     image_points, image_point_indices = build_image_points(points)
     references = parse_spatial_references(root)
@@ -314,11 +333,11 @@ def main() -> None:
         image_id_by_source_id,
         references,
         target_srs_id,
-        lambda x, y: (x, y),
+        lambda source_id, x, y: (x, y),
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_cameras(output_dir / "cameras.txt", camera)
+    write_cameras(output_dir / "cameras.txt", cameras)
     write_images(output_dir / "images.txt", images, image_points)
     write_points(output_dir / "points3D.txt", points, image_point_indices)
     if gcps:
@@ -327,7 +346,7 @@ def main() -> None:
     measurement_count = sum(len(point.observations) for point in points)
     gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote COLMAP text model to {output_dir}")
-    print(f"  cameras: 1")
+    print(f"  cameras: {len(cameras)}")
     print(f"  images: {len(images)}")
     print(f"  points3D: {len(points)}")
     print(f"  observations: {measurement_count}")

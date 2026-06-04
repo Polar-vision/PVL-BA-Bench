@@ -75,6 +75,8 @@ The converter undistorts source image measurements before writing `Feature.txt`,
 
 Photos without a complete `Pose` are treated as invalid and skipped. Tie point and GCP measurements that reference skipped photos are filtered out; tracks with fewer than two remaining tie observations are omitted.
 
+Blocks with multiple `Photogroup` entries are supported. Each photogroup is exported as a separate intrinsic group in `cal.txt`, and each image row in `Cam-<N>-.txt` stores the corresponding 1-based camera group ID.
+
 If `AT.xml` contains GCPs, the converter also writes:
 
 ```text
@@ -98,6 +100,8 @@ See [tools/atxml_to_colmap](tools/atxml_to_colmap) for details.
 
 For COLMAP exports, `gcp.txt` and `gcp_observations.txt` are written as sidecar files when GCPs are present. The GCP observations remain in distorted pixel coordinates to match the COLMAP camera model.
 
+Multiple `Photogroup` entries are exported as multiple COLMAP cameras in `cameras.txt`; each image references its source photogroup's camera ID.
+
 ### BlocksExchange XML to BAL
 
 Convert BlocksExchange XML files to the classic BAL single-file format:
@@ -112,6 +116,8 @@ powershell -ExecutionPolicy Bypass -File tools\atxml_to_bal\run.ps1 `
 See [tools/atxml_to_bal](tools/atxml_to_bal) for details.
 
 For BAL exports, GCP sidecars are written next to the BAL file as `problem.gcp.txt` and `problem.gcp_observations.txt`. Their observation coordinates follow the selected BAL mode (`normalized` or `pixel`).
+
+For multi-photogroup inputs, each BAL camera keeps the intrinsic scale of its source photogroup.
 
 ### COLMAP to PVL-BA
 
@@ -160,6 +166,16 @@ powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
 ```
 
 The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default mode perturbs camera poses and re-triangulates tie points while keeping `Feature.txt` fixed. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
+
+### Controlled-AT Release Manifest
+
+The controlled aerotriangulation blocks with GCPs are listed in:
+
+```text
+manifests/control_at_20.csv
+```
+
+This manifest contains 20 unique BA problems after removing duplicate Shiyan first-batch exports. Use [tools/publish_control_at](tools/publish_control_at) to batch-publish PVL-BA, COLMAP, BAL, quality variants, linked viewers, and a dashboard.
 
 ## Input Format
 
