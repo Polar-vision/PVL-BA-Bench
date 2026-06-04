@@ -149,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
   -OutputRoot path\to\QUALITY_VARIANTS
 ```
 
-The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. Noise is applied to `Feature.txt` image observations in PVL-BA, not to COLMAP observations. PVL-BA stores undistorted BA measurements, so target initial RMSE levels are direct and comparable across datasets. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
+The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default mode perturbs camera poses and re-triangulates tie points while keeping `Feature.txt` fixed. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
 
 ## Input Format
 

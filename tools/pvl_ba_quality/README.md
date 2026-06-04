@@ -1,6 +1,6 @@
 # PVL-BA Quality Variants
 
-Generate noisy PVL-BA datasets with controlled initial reprojection RMSE.
+Generate PVL-BA quality variants with controlled initial reprojection RMSE.
 
 ## Naming
 
@@ -10,7 +10,7 @@ Use explicit field tags instead of bare positional numbers:
 problem-i<images>-p<points>-o<observations>-g<gcps>
 ```
 
-For initialization-quality variants, append the target initial RMSE:
+For default initialization-quality variants, append the target initial RMSE:
 
 ```text
 problem-i507-p40315-o139534-g3-init-rmse002p00px
@@ -21,6 +21,12 @@ problem-i507-p40315-o139534-g3-init-rmse050p00px
 problem-i507-p40315-o139534-g3-init-rmse100p00px
 ```
 
+Observation-noise variants use `obs-rmse` instead:
+
+```text
+problem-i507-p40315-o139534-g3-obs-rmse010p00px
+```
+
 The tags make the name self-describing:
 
 - `i`: valid network images.
@@ -28,11 +34,25 @@ The tags make the name self-describing:
 - `o`: tie-point image observations.
 - `g`: GCP count.
 
-## Why PVL-BA Noise
+## Modes
 
-Noise variants should be generated in PVL-BA format rather than COLMAP format for this benchmark. PVL-BA stores undistorted image observations and explicit BA variables, so target initial RMSE levels are direct and comparable. COLMAP text models store distorted observations tied to camera distortion models, so adding pixel noise there mixes measurement noise with distortion-model conventions.
+Default mode:
 
-The tool perturbs `Feature.txt` image observations. Camera poses, 3D points, intrinsics, and GCP object coordinates are copied unchanged. GCP image observations are not perturbed by default.
+```text
+--mode init-pose-triangulate
+```
+
+This mode perturbs camera poses, keeps `Feature.txt` fixed, and re-triangulates `XYZ.txt` from the perturbed cameras and original image observations. It is the recommended benchmark mode because the 3D geometry, camera initialization, and visualized structure all reflect the requested initial quality.
+
+Supplementary mode:
+
+```text
+--mode observation-noise
+```
+
+This mode perturbs `Feature.txt` image observations and leaves camera poses and 3D points unchanged. Use it for observation-noise robustness experiments, not as the main initialization-quality benchmark.
+
+PVL-BA is used rather than COLMAP because it stores undistorted image observations and explicit BA variables. COLMAP observations are tied to camera distortion conventions, so perturbing them mixes measurement noise with distortion-model details.
 
 ## Recommended RMSE Levels
 
@@ -64,6 +84,8 @@ python .\generate_noisy_pvl_ba.py `
   --output-root ..\..\outputs\pvl_ba_quality
 ```
 
+This uses `--mode init-pose-triangulate` and the `main` RMSE preset.
+
 Use custom levels:
 
 ```powershell
@@ -80,6 +102,16 @@ python .\generate_noisy_pvl_ba.py `
   --input-dir ..\..\outputs\abs_at_pvl_ba_check `
   --output-root ..\..\outputs\pvl_ba_quality_stress `
   --preset stress
+```
+
+Generate observation-noise variants:
+
+```powershell
+python .\generate_noisy_pvl_ba.py `
+  --input-dir ..\..\outputs\abs_at_pvl_ba_check `
+  --output-root ..\..\outputs\pvl_ba_observation_noise `
+  --mode observation-noise `
+  --target-rmse 5 10 50 100
 ```
 
 Each output dataset includes `noise_metadata.json`.

@@ -12,6 +12,12 @@ param(
 
     [int]$Seed = 20260603,
     [string]$Prefix = "problem",
+    [ValidateSet("init-pose-triangulate", "observation-noise")]
+    [string]$Mode = "init-pose-triangulate",
+    [double]$RotationWeightDeg = 1.0,
+    [double]$TranslationWeight = 1.0,
+    [double]$MaxScale = 1.0,
+    [int]$BisectionIterations = 24,
     [switch]$IncludeGcpObservations
 )
 
@@ -21,7 +27,12 @@ $argsList = @(
     "--input-dir", $InputDir,
     "--output-root", $OutputRoot,
     "--seed", "$Seed",
-    "--prefix", $Prefix
+    "--prefix", $Prefix,
+    "--mode", $Mode,
+    "--rotation-weight-deg", "$RotationWeightDeg",
+    "--translation-weight", "$TranslationWeight",
+    "--max-scale", "$MaxScale",
+    "--bisection-iterations", "$BisectionIterations"
 )
 
 if ($TargetRmse -and $TargetRmse.Count -gt 0) {
