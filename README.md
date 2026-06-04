@@ -139,6 +139,16 @@ powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run.ps1 `
 
 The viewer renders sparse 3D points, camera centers, camera frustums, optional `gcp.txt` / `gcp_observations.txt` sidecars, and PVL-BA noise metadata when present. See [tools/ba_visualizer](tools/ba_visualizer) for details.
 
+For PVL-BA quality variants, generate a linked viewer that switches between `original`, the main benchmark levels, and stress-test levels in one browser window:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run_quality.ps1 `
+  -InputRoot path\to\QUALITY_VARIANTS `
+  -OutputHtml path\to\quality_linked_viewer.html
+```
+
+The linked viewer preserves the current 3D camera view while switching quality levels and can overlay the original reference geometry. It reports per-level reprojection RMSE, residual percentiles, GCP RMSE, and negative-depth counts.
+
 ### PVL-BA Quality Variants
 
 Generate noisy PVL-BA datasets with controlled initial RMSE:
