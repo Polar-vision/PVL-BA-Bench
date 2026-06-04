@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quality-preset", choices=("main", "stress", "all"), default="all")
     parser.add_argument("--viewers", action="store_true", help="Generate linked quality viewers")
     parser.add_argument("--dashboard", action="store_true", help="Generate dashboard HTML for linked viewers")
+    parser.add_argument("--viewer-camera-stride", type=int, default=1, help="Embed every Nth camera frustum in viewers")
+    parser.add_argument("--viewer-max-points", type=int, default=100000, help="Maximum sparse points embedded in viewers")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of manifest rows, useful for smoke tests")
     parser.add_argument("--only", nargs="*", default=(), help="Dataset names to process")
     parser.add_argument("--python", default=sys.executable)
@@ -203,9 +205,9 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
                     "--output",
                     str(viewer_path),
                     "--camera-stride",
-                    "10",
+                    str(args.viewer_camera_stride),
                     "--max-points",
-                    "100000",
+                    str(args.viewer_max_points),
                 ],
                 args.dry_run,
             )
@@ -221,9 +223,9 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
                     "--format",
                     "pvl-ba",
                     "--camera-stride",
-                    "10",
+                    str(args.viewer_camera_stride),
                     "--max-points",
-                    "100000",
+                    str(args.viewer_max_points),
                 ],
                 args.dry_run,
             )

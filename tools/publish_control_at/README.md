@@ -35,6 +35,16 @@ powershell -ExecutionPolicy Bypass -File tools\publish_control_at\run.ps1 `
   -Dashboard
 ```
 
+By default, viewers embed one frustum per camera. For very large blocks, reduce HTML size with:
+
+```powershell
+python tools\publish_control_at\publish_control_at.py `
+  --output-root D:\PVL-BA-ControlAT `
+  --formats pvl-ba `
+  --viewers `
+  --viewer-camera-stride 10
+```
+
 The release tree uses:
 
 ```text
