@@ -311,6 +311,51 @@ def euler_from_rotation(rotation: list[list[float]]) -> tuple[float, float, floa
     return ey, ex, ez
 
 
+def rotation_delta_deg(reference: list[list[float]], perturbed: list[list[float]]) -> float:
+    delta = mat_mul(perturbed, transpose(reference))
+    trace = delta[0][0] + delta[1][1] + delta[2][2]
+    cos_theta = max(-1.0, min(1.0, (trace - 1.0) * 0.5))
+    return math.degrees(math.acos(cos_theta))
+
+
+def summary(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "rmse": 0.0, "median": 0.0, "p95": 0.0, "max": 0.0}
+    ordered = sorted(values)
+    count = len(ordered)
+    return {
+        "mean": sum(ordered) / count,
+        "rmse": math.sqrt(sum(value * value for value in ordered) / count),
+        "median": ordered[count // 2],
+        "p95": ordered[min(count - 1, int(0.95 * count))],
+        "max": ordered[-1],
+    }
+
+
+def pose_error_summary(reference: list[Camera], perturbed: list[Camera]) -> dict:
+    center_errors = []
+    rotation_errors = []
+    for ref_camera, perturbed_camera in zip(reference, perturbed):
+        center_errors.append(
+            math.sqrt(
+                sum((perturbed_camera.center[index] - ref_camera.center[index]) ** 2 for index in range(3))
+            )
+        )
+        rotation_errors.append(rotation_delta_deg(ref_camera.rotation, perturbed_camera.rotation))
+    return {
+        "camera_center_error_world": summary(center_errors),
+        "camera_rotation_error_deg": summary(rotation_errors),
+    }
+
+
+def point_error_summary(reference: list[tuple[float, float, float]], perturbed: list[tuple[float, float, float]]) -> dict:
+    errors = [
+        math.sqrt(sum((perturbed_point[index] - ref_point[index]) ** 2 for index in range(3)))
+        for ref_point, perturbed_point in zip(reference, perturbed)
+    ]
+    return {"tie_point_error_world": summary(errors)}
+
+
 def write_cam(path: Path, cameras: list[Camera]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for camera in cameras:
@@ -564,6 +609,8 @@ def generate_pose_triangulate_variant(
             "gcp_observations_perturbed": 0,
         }
     )
+    metadata.update(pose_error_summary(cameras, noisy_cameras))
+    metadata.update(point_error_summary(points, noisy_points))
     write_metadata(output_dir / "noise_metadata.json", metadata)
     print(f"wrote {output_dir} pose_scale={scale:.6f} actual_rmse={actual_rmse:.6f} px")
 

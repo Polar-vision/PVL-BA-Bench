@@ -253,6 +253,12 @@ def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path) -> d
             "gcpRmsePx": gcp_metrics.get("rmsePx"),
             "gcpP95Px": gcp_metrics.get("p95Px"),
             "poseScale": metadata.get("pose_noise_scale"),
+            "cameraCenterRmse": (metadata.get("camera_center_error_world") or {}).get("rmse"),
+            "cameraCenterP95": (metadata.get("camera_center_error_world") or {}).get("p95"),
+            "cameraRotRmseDeg": (metadata.get("camera_rotation_error_deg") or {}).get("rmse"),
+            "cameraRotP95Deg": (metadata.get("camera_rotation_error_deg") or {}).get("p95"),
+            "tiePointRmseWorld": (metadata.get("tie_point_error_world") or {}).get("rmse"),
+            "tiePointP95World": (metadata.get("tie_point_error_world") or {}).get("p95"),
         }
     )
     if dataset.target_rmse_px is not None:
@@ -601,6 +607,9 @@ HTML_TEMPLATE = r"""<!doctype html>
         ['Neg. depth', stats.negativeDepthCount],
         ['GCP RMSE', fmt(stats.gcpRmsePx, 3)],
         ['Pose scale', fmt(stats.poseScale, 6)],
+        ['Cam C RMSE', fmt(stats.cameraCenterRmse, 3)],
+        ['Cam R RMSE deg', fmt(stats.cameraRotRmseDeg, 4)],
+        ['Point RMSE', fmt(stats.tiePointRmseWorld, 3)],
       ];
       const panel = document.getElementById('stats');
       panel.innerHTML = '';

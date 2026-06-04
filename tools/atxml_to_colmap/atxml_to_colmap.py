@@ -6,17 +6,20 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import shutil
 import sys
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    SpatialReference,
+    control_point_to_gcp,
     has_complete_pose,
-    parse_ground_control_points,
-    parse_spatial_references,
+    remove_from_parent,
     write_gcp_files,
 )
 
@@ -44,6 +47,40 @@ class Point3D:
     xyz: tuple[float, float, float]
     rgb: tuple[int, int, int]
     observations: list[tuple[int, float, float]]
+
+
+class ImagePointTempWriter:
+    def __init__(self, root: Path, max_open_files: int = 128) -> None:
+        self.root = root
+        self.max_open_files = max_open_files
+        self.handles: OrderedDict[int, object] = OrderedDict()
+
+    def path_for_image(self, image_id: int) -> Path:
+        shard = self.root / f"{image_id // 1000:06d}"
+        return shard / f"{image_id}.txt"
+
+    def handle_for_image(self, image_id: int):
+        handle = self.handles.get(image_id)
+        if handle is not None:
+            self.handles.move_to_end(image_id)
+            return handle
+        path = self.path_for_image(image_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a", encoding="utf-8", newline="\n")
+        self.handles[image_id] = handle
+        if len(self.handles) > self.max_open_files:
+            _old_image_id, old_handle = self.handles.popitem(last=False)
+            old_handle.close()
+        return handle
+
+    def write(self, image_id: int, x: float, y: float, point3d_id: int) -> None:
+        handle = self.handle_for_image(image_id)
+        handle.write(f"{format_float(x)} {format_float(y)} {point3d_id} ")
+
+    def close(self) -> None:
+        for handle in self.handles.values():
+            handle.close()
+        self.handles.clear()
 
 
 def parse_args() -> argparse.Namespace:
@@ -222,6 +259,67 @@ def parse_photogroups(block: ET.Element, camera_model: str) -> tuple[dict[int, C
     return cameras, images, image_id_by_source_id
 
 
+def stream_metadata(
+    input_path: Path,
+    camera_model: str,
+) -> tuple[dict[int, Camera], dict[int, Image], dict[int, int], dict[int, SpatialReference], int]:
+    cameras: dict[int, Camera] = {}
+    images: dict[int, Image] = {}
+    image_id_by_source_id: dict[int, int] = {}
+    references: dict[int, SpatialReference] = {}
+    target_srs_id: int | None = None
+    element_stack: list[ET.Element] = []
+    tag_stack: list[str] = []
+
+    for event, element in ET.iterparse(input_path, events=("start", "end")):
+        if event == "start":
+            element_stack.append(element)
+            tag_stack.append(element.tag)
+            continue
+
+        path = tuple(tag_stack)
+        if element.tag == "SRSId" and path[-3:] == ("BlocksExchange", "Block", "SRSId"):
+            target_srs_id = int(element.text or "0")
+        elif element.tag == "SRS" and len(path) >= 3 and path[-2] == "SpatialReferenceSystems":
+            srs_id = int(text(element, "Id"))
+            references[srs_id] = SpatialReference(
+                srs_id=srs_id,
+                name=element.findtext("Name", ""),
+                definition=element.findtext("Definition", ""),
+            )
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroup":
+            camera_id = len(cameras) + 1
+            cameras[camera_id] = parse_camera(element, camera_model, camera_id)
+            start_image_id = len(images) + 1
+            group_images = parse_images(element, camera_id, start_image_id)
+            for image_id, image in group_images.items():
+                images[image_id] = image
+            local_index = 0
+            for photo in element.findall("Photo"):
+                source_id = int(text(photo, "Id"))
+                if not has_complete_pose(photo):
+                    continue
+                if source_id in image_id_by_source_id:
+                    raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+                image_id_by_source_id[source_id] = start_image_id + local_index
+                local_index += 1
+            remove_from_parent(element_stack, element)
+        elif element.tag in {"TiePoint", "ControlPoint"}:
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroups" and target_srs_id is not None:
+            break
+
+        element_stack.pop()
+        tag_stack.pop()
+
+    if not cameras:
+        raise ValueError("Missing Photogroup element")
+    if target_srs_id is None:
+        raise ValueError("Missing Block/SRSId")
+    return cameras, images, image_id_by_source_id, references, target_srs_id
+
+
 def parse_points(block: ET.Element, image_id_by_source_id: dict[int, int]) -> list[Point3D]:
     tiepoints = block.find("TiePoints")
     if tiepoints is None:
@@ -310,6 +408,105 @@ def build_image_points(points: list[Point3D]) -> tuple[dict[int, list[tuple[floa
     return image_points, image_point_indices
 
 
+def stream_points_gcps_and_image_points(
+    input_path: Path,
+    points_tmp: Path,
+    temp_image_points: ImagePointTempWriter,
+    image_id_by_source_id: dict[int, int],
+    references: dict[int, SpatialReference],
+    target_srs_id: int,
+    max_image_id: int,
+) -> tuple[int, int, list]:
+    point_count = 0
+    observation_count = 0
+    image_point_counts = [0] * (max_image_id + 1)
+    gcps = []
+    element_stack: list[ET.Element] = []
+
+    with points_tmp.open("w", encoding="utf-8", newline="\n") as points_fh:
+        for event, element in ET.iterparse(input_path, events=("start", "end")):
+            if event == "start":
+                element_stack.append(element)
+                continue
+
+            if element.tag == "TiePoint":
+                position = element.find("Position")
+                if position is None:
+                    raise ValueError("TiePoint has no Position")
+                xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
+                rgb = color_to_rgb(element.find("Color"))
+                observations = []
+                for measurement in element.findall("Measurement"):
+                    source_id = int(text(measurement, "PhotoId"))
+                    image_id = image_id_by_source_id.get(source_id)
+                    if image_id is None:
+                        continue
+                    x = ftext(measurement, "x")
+                    y = ftext(measurement, "y")
+                    observations.append((image_id, x, y))
+                if len(observations) >= 2:
+                    point_count += 1
+                    track_items = []
+                    for image_id, x, y in observations:
+                        point2d_idx = image_point_counts[image_id]
+                        image_point_counts[image_id] += 1
+                        temp_image_points.write(image_id, x, y, point_count)
+                        track_items.append(f"{image_id} {point2d_idx}")
+                    xyz_text = " ".join(format_float(value) for value in xyz)
+                    r, g, b = rgb
+                    track = " ".join(track_items)
+                    points_fh.write(f"{point_count} {xyz_text} {r} {g} {b} 0 {track}\n")
+                    observation_count += len(observations)
+                remove_from_parent(element_stack, element)
+            elif element.tag == "ControlPoint":
+                gcps.append(
+                    control_point_to_gcp(
+                        element,
+                        len(gcps),
+                        image_id_by_source_id,
+                        references,
+                        target_srs_id,
+                        lambda _source_id, x, y: (x, y),
+                    )
+                )
+                remove_from_parent(element_stack, element)
+            elif element.tag in {"SRS", "Photogroup"}:
+                remove_from_parent(element_stack, element)
+
+            element_stack.pop()
+
+    temp_image_points.close()
+    return point_count, observation_count, gcps
+
+
+def write_images_from_temp(path: Path, images: dict[int, Image], temp_image_points: ImagePointTempWriter) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# Image list with two lines of data per image:\n")
+        fh.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
+        fh.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
+        fh.write(f"# Number of images: {len(images)}\n")
+        for image_id in sorted(images):
+            image = images[image_id]
+            q = " ".join(format_float(value) for value in image.qvec)
+            t = " ".join(format_float(value) for value in image.tvec)
+            fh.write(f"{image.image_id} {q} {t} {image.camera_id} {image.name}\n")
+            temp_path = temp_image_points.path_for_image(image_id)
+            if temp_path.exists():
+                with temp_path.open(encoding="utf-8") as points_fh:
+                    shutil.copyfileobj(points_fh, fh)
+            fh.write("\n")
+
+
+def write_points_from_temp(path: Path, points_tmp: Path, point_count: int) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# 3D point list with one line of data per point:\n")
+        fh.write("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
+        fh.write(f"# Number of points: {point_count}\n")
+        with points_tmp.open(encoding="utf-8") as points_fh:
+            for line in points_fh:
+                fh.write(line)
+
+
 def main() -> None:
     args = parse_args()
     input_path = args.input.resolve()
@@ -317,38 +514,40 @@ def main() -> None:
     if not input_path.exists():
         raise FileNotFoundError(input_path)
 
-    tree = ET.parse(input_path)
-    root = tree.getroot()
-    block = root.find("Block")
-    if block is None:
-        raise ValueError("Missing Block element")
-
-    cameras, images, image_id_by_source_id = parse_photogroups(block, args.camera_model)
-    points = parse_points(block, image_id_by_source_id)
-    image_points, image_point_indices = build_image_points(points)
-    references = parse_spatial_references(root)
-    target_srs_id = int(text(block, "SRSId"))
-    gcps = parse_ground_control_points(
-        block,
-        image_id_by_source_id,
-        references,
-        target_srs_id,
-        lambda source_id, x, y: (x, y),
-    )
+    cameras, images, image_id_by_source_id, references, target_srs_id = stream_metadata(input_path, args.camera_model)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_cameras(output_dir / "cameras.txt", cameras)
-    write_images(output_dir / "images.txt", images, image_points)
-    write_points(output_dir / "points3D.txt", points, image_point_indices)
+    temp_root = output_dir / ".points2D.tmp"
+    points_tmp = output_dir / ".points3D.tmp"
+    if temp_root.exists():
+        shutil.rmtree(temp_root)
+    temp_image_points = ImagePointTempWriter(temp_root)
+    try:
+        point_count, measurement_count, gcps = stream_points_gcps_and_image_points(
+            input_path,
+            points_tmp,
+            temp_image_points,
+            image_id_by_source_id,
+            references,
+            target_srs_id,
+            max(images) if images else 0,
+        )
+        write_cameras(output_dir / "cameras.txt", cameras)
+        write_images_from_temp(output_dir / "images.txt", images, temp_image_points)
+        write_points_from_temp(output_dir / "points3D.txt", points_tmp, point_count)
+    finally:
+        temp_image_points.close()
+        points_tmp.unlink(missing_ok=True)
+        if temp_root.exists():
+            shutil.rmtree(temp_root)
     if gcps:
         write_gcp_files(output_dir / "gcp.txt", output_dir / "gcp_observations.txt", gcps)
 
-    measurement_count = sum(len(point.observations) for point in points)
     gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote COLMAP text model to {output_dir}")
     print(f"  cameras: {len(cameras)}")
     print(f"  images: {len(images)}")
-    print(f"  points3D: {len(points)}")
+    print(f"  points3D: {point_count}")
     print(f"  observations: {measurement_count}")
     print(f"  gcps: {len(gcps)}")
     print(f"  gcp observations: {gcp_observations}")

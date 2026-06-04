@@ -4,6 +4,8 @@ Convert BlocksExchange XML files, commonly named `AT.xml`, to the classic BAL si
 
 The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
 
+The XML reader is streaming: photogroups, tie points, and control points are processed incrementally with `xml.etree.ElementTree.iterparse`. BAL observations and 3D points are staged in temporary files before the final headered BAL file is assembled.
+
 ## BAL Layout
 
 The output file uses:

@@ -85,5 +85,7 @@ Use `--reference-dir` / `-ReferenceDir` when the original PVL-BA dataset is stor
 - GCP coordinates are rendered in the same world frame as the BA problem.
 - The viewer maps ENU-style world coordinates to a Z-up scene for easier inspection.
 - For PVL-BA quality variants, the side panel displays current RMSE and target RMSE from `noise_metadata.json`.
-- The linked quality viewer also reports per-level RMSE, residual percentiles, GCP RMSE, and negative-depth counts.
+- The linked quality viewer also reports per-level RMSE, residual percentiles, GCP RMSE, negative-depth counts, and pose-triangulation error summaries when available.
 - Use the `Frustum size` slider to resize camera frustums interactively without regenerating the viewer.
+
+`Original overlay` is a visual reference, not an image-space residual plot. In high-RMSE stress tests, camera centers and frustums can still appear close in world space while small angular errors, long focal lengths, and re-triangulated tie points produce hundreds of pixels of reprojection error. Use the side-panel camera-center RMSE, camera-rotation RMSE, tie-point RMSE, and residual percentiles together.

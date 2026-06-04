@@ -75,6 +75,8 @@ The converter undistorts source image measurements before writing `Feature.txt`,
 
 Photos without a complete `Pose` are treated as invalid and skipped. Tie point and GCP measurements that reference skipped photos are filtered out; tracks with fewer than two remaining tie observations are omitted.
 
+The AT converters use streaming XML parsing. `Photogroup`, `TiePoint`, and `ControlPoint` elements are processed incrementally, so large BlocksExchange XML files do not need to be loaded as one in-memory tree.
+
 Blocks with multiple `Photogroup` entries are supported. Each photogroup is exported as a separate intrinsic group in `cal.txt`, and each image row in `Cam-<N>-.txt` stores the corresponding 1-based camera group ID.
 
 If `AT.xml` contains GCPs, the converter also writes:
@@ -154,6 +156,8 @@ powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run_quality.ps1 `
 ```
 
 The linked viewer preserves the current 3D camera view while switching quality levels and can overlay the original reference geometry. It reports per-level reprojection RMSE, residual percentiles, GCP RMSE, and negative-depth counts.
+
+For pose-triangulated quality variants, the viewer also reports camera-center, camera-rotation, and tie-point world-coordinate error summaries from `noise_metadata.json`. These values are useful for interpreting stress tests: a visually modest frustum displacement can still produce a very large image-space RMSE when small angular errors are projected through long focal lengths and re-triangulated tie points.
 
 ### PVL-BA Quality Variants
 

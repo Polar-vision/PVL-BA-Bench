@@ -55,3 +55,9 @@ original
 ```
 
 The linked viewer groups `2..100 px` as the main benchmark and `200, 500 px` as stress tests.
+
+## Resource Notes
+
+The AT-to-PVL-BA, AT-to-COLMAP, and AT-to-BAL converters use streaming XML parsing and can process large BlocksExchange files without loading the complete XML tree into RAM.
+
+Quality generation is a different workload. The default `init-pose-triangulate` mode repeatedly perturbs all cameras, re-triangulates all tie points, and evaluates all image observations to hit each target RMSE. For the 20-block control-AT manifest, the original PVL-BA/COLMAP/BAL text exports are expected to be on the order of 150 GB, while eight PVL-BA quality variants can add several hundred GB more. Run the full release on a large output disk and process very large blocks individually if memory or wall time is limited.

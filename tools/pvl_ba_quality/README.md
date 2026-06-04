@@ -115,3 +115,9 @@ python .\generate_noisy_pvl_ba.py `
 ```
 
 Each output dataset includes `noise_metadata.json`.
+
+For `init-pose-triangulate`, `noise_metadata.json` also records camera-center error, camera-rotation error, and tie-point coordinate error summaries relative to the input PVL-BA dataset. These metrics help explain high-RMSE stress levels: a few degrees of rotation error or a small center shift in world coordinates can become a large image-space residual after projection and re-triangulation.
+
+## Scale Notes
+
+This generator currently reads PVL-BA cameras, points, and feature tracks into memory and repeatedly re-triangulates all points during pose-noise bisection. It is appropriate for sampled blocks and moderate releases; for 50,000+ image blocks, run it on a workstation or cluster with sufficient RAM and time, or split release generation by dataset.

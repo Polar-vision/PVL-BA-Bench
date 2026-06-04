@@ -8,6 +8,8 @@ Convert a BlocksExchange `AT.xml` aerotriangulation result into COLMAP text mode
 
 The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
 
+The XML reader is streaming: photogroups, tie points, and control points are processed incrementally with `xml.etree.ElementTree.iterparse`. For COLMAP, per-image `POINTS2D` records are staged in temporary files while `points3D.txt` is written from the tie-point stream, avoiding a large in-memory observation table.
+
 ## Pose convention
 
 Validation on the sample BlocksExchange XML problem used during development shows the XML rotation is world-to-camera:

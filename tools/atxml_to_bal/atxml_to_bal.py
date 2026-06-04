@@ -12,9 +12,10 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    SpatialReference,
+    control_point_to_gcp,
     has_complete_pose,
-    parse_ground_control_points,
-    parse_spatial_references,
+    remove_from_parent,
     write_gcp_files,
 )
 
@@ -131,6 +132,53 @@ def parse_photogroups(block: ET.Element) -> dict[int, Camera]:
     return cameras
 
 
+def stream_metadata(input_path: Path) -> tuple[dict[int, Camera], dict[int, SpatialReference], int]:
+    cameras: dict[int, Camera] = {}
+    references: dict[int, SpatialReference] = {}
+    target_srs_id: int | None = None
+    element_stack: list[ET.Element] = []
+    tag_stack: list[str] = []
+
+    for event, element in ET.iterparse(input_path, events=("start", "end")):
+        if event == "start":
+            element_stack.append(element)
+            tag_stack.append(element.tag)
+            continue
+
+        path = tuple(tag_stack)
+        if element.tag == "SRSId" and path[-3:] == ("BlocksExchange", "Block", "SRSId"):
+            target_srs_id = int(element.text or "0")
+        elif element.tag == "SRS" and len(path) >= 3 and path[-2] == "SpatialReferenceSystems":
+            srs_id = int(text(element, "Id"))
+            references[srs_id] = SpatialReference(
+                srs_id=srs_id,
+                name=element.findtext("Name", ""),
+                definition=element.findtext("Definition", ""),
+            )
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroup":
+            intrinsics = parse_intrinsics(element)
+            group_cameras = parse_cameras(element, intrinsics, len(cameras))
+            for source_id, camera in group_cameras.items():
+                if source_id in cameras:
+                    raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+                cameras[source_id] = camera
+            remove_from_parent(element_stack, element)
+        elif element.tag in {"TiePoint", "ControlPoint"}:
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroups" and target_srs_id is not None:
+            break
+
+        element_stack.pop()
+        tag_stack.pop()
+
+    if not cameras:
+        raise ValueError("Missing valid cameras")
+    if target_srs_id is None:
+        raise ValueError("Missing Block/SRSId")
+    return cameras, references, target_srs_id
+
+
 def parse_points(block: ET.Element, cameras: dict[int, Camera], mode: str, iterations: int) -> list[Point]:
     tiepoints = block.find("TiePoints")
     if tiepoints is None:
@@ -161,6 +209,80 @@ def parse_points(block: ET.Element, cameras: dict[int, Camera], mode: str, itera
             observations.sort(key=lambda observation: observation)
             points.append(Point(xyz, observations))
     return points
+
+
+def stream_points_and_gcps(
+    input_path: Path,
+    observations_tmp: Path,
+    points_tmp: Path,
+    cameras: dict[int, Camera],
+    mode: str,
+    iterations: int,
+    references: dict[int, SpatialReference],
+    target_srs_id: int,
+) -> tuple[int, int, list]:
+    point_count = 0
+    observation_count = 0
+    gcps = []
+    camera_index_by_source_id = {source_id: camera.index for source_id, camera in cameras.items()}
+    element_stack: list[ET.Element] = []
+
+    with observations_tmp.open("w", encoding="utf-8", newline="\n") as obs_fh, points_tmp.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as points_fh:
+        for event, element in ET.iterparse(input_path, events=("start", "end")):
+            if event == "start":
+                element_stack.append(element)
+                continue
+
+            if element.tag == "TiePoint":
+                position = element.find("Position")
+                if position is None:
+                    raise ValueError("TiePoint without Position")
+                xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
+                observations = []
+                for measurement in element.findall("Measurement"):
+                    source_id = int(text(measurement, "PhotoId"))
+                    if source_id not in cameras:
+                        continue
+                    intrinsics = cameras[source_id].intrinsics
+                    x, y = transform_observation_for_mode(
+                        ftext(measurement, "x"),
+                        ftext(measurement, "y"),
+                        intrinsics,
+                        mode,
+                        iterations,
+                    )
+                    observations.append((cameras[source_id].index, x, y))
+                if len(observations) >= 2:
+                    observations.sort(key=lambda observation: observation)
+                    for camera_index, x, y in observations:
+                        obs_fh.write(f"{camera_index} {point_count} {x:.17g} {y:.17g}\n")
+                    for value in xyz:
+                        points_fh.write(f"{value:.17g}\n")
+                    point_count += 1
+                    observation_count += len(observations)
+                remove_from_parent(element_stack, element)
+            elif element.tag == "ControlPoint":
+                gcps.append(
+                    control_point_to_gcp(
+                        element,
+                        len(gcps),
+                        camera_index_by_source_id,
+                        references,
+                        target_srs_id,
+                        lambda source_id, x, y: transform_observation_for_mode(
+                            x, y, cameras[source_id].intrinsics, mode, iterations
+                        ),
+                    )
+                )
+                remove_from_parent(element_stack, element)
+            elif element.tag in {"SRS", "Photogroup"}:
+                remove_from_parent(element_stack, element)
+
+            element_stack.pop()
+
+    return point_count, observation_count, gcps
 
 
 def transform_observation_for_mode(
@@ -256,35 +378,61 @@ def write_bal(path: Path, cameras: dict[int, Camera], points: list[Point], mode:
                 fh.write(f"{value:.17g}\n")
 
 
+def write_bal_from_streams(
+    path: Path,
+    cameras: dict[int, Camera],
+    observation_count: int,
+    point_count: int,
+    observations_tmp: Path,
+    points_tmp: Path,
+    mode: str,
+) -> None:
+    ordered_cameras = sorted(cameras.values(), key=lambda camera: camera.index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"{len(ordered_cameras)} {point_count} {observation_count}\n")
+        with observations_tmp.open(encoding="utf-8") as obs_fh:
+            for line in obs_fh:
+                fh.write(line)
+        for camera in ordered_cameras:
+            angle_axis = rotation_to_angle_axis(camera.rotation)
+            translation = translation_from_center(camera.rotation, camera.center)
+            focal = 1.0 if mode == "normalized" else camera.intrinsics.focal
+            for value in (*angle_axis, *translation, focal, 0.0, 0.0):
+                fh.write(f"{value:.17g}\n")
+        with points_tmp.open(encoding="utf-8") as points_fh:
+            for line in points_fh:
+                fh.write(line)
+
+
 def main() -> None:
     args = parse_args()
-    root = ET.parse(args.input).getroot()
-    block = root.find("Block")
-    if block is None:
-        raise ValueError("Missing Block")
-    cameras = parse_photogroups(block)
-    points = parse_points(block, cameras, args.mode, args.undistort_iterations)
-    references = parse_spatial_references(root)
-    target_srs_id = int(text(block, "SRSId"))
-    camera_index_by_source_id = {source_id: camera.index for source_id, camera in cameras.items()}
-    gcps = parse_ground_control_points(
-        block,
-        camera_index_by_source_id,
-        references,
-        target_srs_id,
-        lambda source_id, x, y: transform_observation_for_mode(
-            x, y, cameras[source_id].intrinsics, args.mode, args.undistort_iterations
-        ),
-    )
-    write_bal(args.output, cameras, points, args.mode)
+    cameras, references, target_srs_id = stream_metadata(args.input)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    observations_tmp = args.output.with_suffix(args.output.suffix + ".observations.tmp")
+    points_tmp = args.output.with_suffix(args.output.suffix + ".points.tmp")
+    try:
+        point_count, observation_count, gcps = stream_points_and_gcps(
+            args.input,
+            observations_tmp,
+            points_tmp,
+            cameras,
+            args.mode,
+            args.undistort_iterations,
+            references,
+            target_srs_id,
+        )
+        write_bal_from_streams(args.output, cameras, observation_count, point_count, observations_tmp, points_tmp, args.mode)
+    finally:
+        observations_tmp.unlink(missing_ok=True)
+        points_tmp.unlink(missing_ok=True)
     if gcps:
         write_gcp_files(args.output.with_suffix(".gcp.txt"), args.output.with_suffix(".gcp_observations.txt"), gcps)
-    observation_count = sum(len(point.observations) for point in points)
     gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote BAL file to {args.output.resolve()}")
     print(f"  mode: {args.mode}")
     print(f"  cameras: {len(cameras)}")
-    print(f"  points: {len(points)}")
+    print(f"  points: {point_count}")
     print(f"  observations: {observation_count}")
     print(f"  gcps: {len(gcps)}")
     print(f"  gcp observations: {gcp_observations}")

@@ -12,9 +12,10 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from pvl_ba_utils.blocksexchange import (  # noqa: E402
+    SpatialReference,
+    control_point_to_gcp,
     has_complete_pose,
-    parse_ground_control_points,
-    parse_spatial_references,
+    remove_from_parent,
     write_gcp_files,
 )
 
@@ -143,6 +144,58 @@ def parse_photogroups(block: ET.Element) -> tuple[list[Intrinsics], dict[int, Ph
     return intrinsics_by_group, photos, intrinsics_by_photo_id
 
 
+def stream_metadata(input_path: Path) -> tuple[list[Intrinsics], dict[int, Photo], dict[int, Intrinsics], dict[int, SpatialReference], int]:
+    intrinsics_by_group: list[Intrinsics] = []
+    photos: dict[int, Photo] = {}
+    intrinsics_by_photo_id: dict[int, Intrinsics] = {}
+    references: dict[int, SpatialReference] = {}
+    target_srs_id: int | None = None
+    element_stack: list[ET.Element] = []
+    tag_stack: list[str] = []
+
+    for event, element in ET.iterparse(input_path, events=("start", "end")):
+        if event == "start":
+            element_stack.append(element)
+            tag_stack.append(element.tag)
+            continue
+
+        path = tuple(tag_stack)
+        if element.tag == "SRSId" and path[-3:] == ("BlocksExchange", "Block", "SRSId"):
+            target_srs_id = int(element.text or "0")
+        elif element.tag == "SRS" and len(path) >= 3 and path[-2] == "SpatialReferenceSystems":
+            srs_id = int(text(element, "Id"))
+            references[srs_id] = SpatialReference(
+                srs_id=srs_id,
+                name=element.findtext("Name", ""),
+                definition=element.findtext("Definition", ""),
+            )
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroup":
+            group_id = len(intrinsics_by_group) + 1
+            intrinsics = parse_intrinsics(element)
+            intrinsics_by_group.append(intrinsics)
+            group_photos = parse_photos(element, group_id, len(photos))
+            for source_id, photo in group_photos.items():
+                if source_id in photos:
+                    raise ValueError(f"Duplicate Photo Id across photogroups: {source_id}")
+                photos[source_id] = photo
+                intrinsics_by_photo_id[source_id] = intrinsics
+            remove_from_parent(element_stack, element)
+        elif element.tag in {"TiePoint", "ControlPoint"}:
+            remove_from_parent(element_stack, element)
+        elif element.tag == "Photogroups" and target_srs_id is not None:
+            break
+
+        element_stack.pop()
+        tag_stack.pop()
+
+    if not intrinsics_by_group:
+        raise ValueError("Missing Photogroup")
+    if target_srs_id is None:
+        raise ValueError("Missing Block/SRSId")
+    return intrinsics_by_group, photos, intrinsics_by_photo_id, references, target_srs_id
+
+
 def parse_tiepoints(
     block: ET.Element,
     photos: dict[int, Photo],
@@ -171,6 +224,77 @@ def parse_tiepoints(
         if len(observations) >= 2:
             tiepoints.append(TiePoint(xyz=xyz, observations=observations))
     return tiepoints
+
+
+def write_xyz_feature_and_collect_gcps(
+    input_path: Path,
+    xyz_path: Path,
+    feature_path: Path,
+    photos: dict[int, Photo],
+    intrinsics_by_photo_id: dict[int, Intrinsics],
+    references: dict[int, SpatialReference],
+    target_srs_id: int,
+    iterations: int,
+) -> tuple[int, int, list]:
+    photo_index_by_source_id = {source_id: photo.row_index for source_id, photo in photos.items()}
+    point_count = 0
+    observation_count = 0
+    gcps = []
+    element_stack: list[ET.Element] = []
+
+    with xyz_path.open("w", encoding="utf-8", newline="\n") as xyz_fh, feature_path.open(
+        "w", encoding="utf-8", newline="\n"
+    ) as feature_fh:
+        for event, element in ET.iterparse(input_path, events=("start", "end")):
+            if event == "start":
+                element_stack.append(element)
+                continue
+
+            if element.tag == "TiePoint":
+                position = element.find("Position")
+                if position is None:
+                    raise ValueError("TiePoint without Position")
+                xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
+                observations = []
+                for measurement in element.findall("Measurement"):
+                    source_id = int(text(measurement, "PhotoId"))
+                    if source_id not in photos:
+                        continue
+                    xd = ftext(measurement, "x")
+                    yd = ftext(measurement, "y")
+                    u, v = undistort_pixel(xd, yd, intrinsics_by_photo_id[source_id], iterations)
+                    observations.append((photos[source_id].row_index, u, v))
+                if len(observations) >= 2:
+                    x, y, z = xyz
+                    xyz_fh.write(f"{x:.12f} {y:.12f} {z:.12f}\n")
+                    fields = [str(len(observations))]
+                    for image_idx, u, v in sorted(observations, key=lambda observation: observation):
+                        fields.extend((str(image_idx), f"{u:.12f}", f"{v:.12f}"))
+                    feature_fh.write(" ".join(fields))
+                    feature_fh.write("\n")
+                    point_count += 1
+                    observation_count += len(observations)
+                remove_from_parent(element_stack, element)
+            elif element.tag == "ControlPoint":
+                gcps.append(
+                    control_point_to_gcp(
+                        element,
+                        len(gcps),
+                        photo_index_by_source_id,
+                        references,
+                        target_srs_id,
+                        lambda source_id, x, y: undistort_pixel(
+                            x, y, intrinsics_by_photo_id[source_id], iterations
+                        ),
+                    )
+                )
+                remove_from_parent(element_stack, element)
+            elif element.tag in {"SRS", "Photogroup"}:
+                remove_from_parent(element_stack, element)
+
+            element_stack.pop()
+
+    return point_count, observation_count, gcps
 
 
 def distort_normalized(x: float, y: float, intrinsics: Intrinsics) -> tuple[float, float]:
@@ -247,38 +371,29 @@ def write_feature(path: Path, tiepoints: list[TiePoint]) -> None:
 
 def main() -> None:
     args = parse_args()
-    root = ET.parse(args.input).getroot()
-    block = root.find("Block")
-    if block is None:
-        raise ValueError("Missing Block")
-
-    intrinsics_by_group, photos, intrinsics_by_photo_id = parse_photogroups(block)
-    tiepoints = parse_tiepoints(block, photos, intrinsics_by_photo_id, args.undistort_iterations)
-    references = parse_spatial_references(root)
-    target_srs_id = int(text(block, "SRSId"))
-    photo_index_by_source_id = {source_id: photo.row_index for source_id, photo in photos.items()}
-    gcps = parse_ground_control_points(
-        block,
-        photo_index_by_source_id,
-        references,
-        target_srs_id,
-        lambda source_id, x, y: undistort_pixel(x, y, intrinsics_by_photo_id[source_id], args.undistort_iterations),
-    )
+    intrinsics_by_group, photos, intrinsics_by_photo_id, references, target_srs_id = stream_metadata(args.input)
 
     args.output.mkdir(parents=True, exist_ok=True)
     write_cal(args.output / "cal.txt", intrinsics_by_group)
     write_cam(args.output / f"Cam-{len(photos)}-.txt", photos)
-    write_xyz(args.output / "XYZ.txt", tiepoints)
-    write_feature(args.output / "Feature.txt", tiepoints)
+    point_count, observations, gcps = write_xyz_feature_and_collect_gcps(
+        args.input,
+        args.output / "XYZ.txt",
+        args.output / "Feature.txt",
+        photos,
+        intrinsics_by_photo_id,
+        references,
+        target_srs_id,
+        args.undistort_iterations,
+    )
     if gcps:
         write_gcp_files(args.output / "gcp.txt", args.output / "gcp_observations.txt", gcps)
 
-    observations = sum(len(tiepoint.observations) for tiepoint in tiepoints)
     gcp_observations = sum(len(gcp.observations) for gcp in gcps)
     print(f"Wrote PVL-BA format to {args.output.resolve()}")
     print(f"  intrinsics groups: {len(intrinsics_by_group)}")
     print(f"  cameras: {len(photos)}")
-    print(f"  points: {len(tiepoints)}")
+    print(f"  points: {point_count}")
     print(f"  observations: {observations}")
     print(f"  gcps: {len(gcps)}")
     print(f"  gcp observations: {gcp_observations}")

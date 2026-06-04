@@ -159,36 +159,95 @@ def parse_ground_control_points(
 
     gcps: list[GroundControlPoint] = []
     for control_point in control_points.findall("ControlPoint"):
-        source_srs_id = int(text(control_point, "SRSId"))
-        position = control_point.find("Position")
-        if position is None:
-            raise ValueError("ControlPoint without Position")
-        source_xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
-        xyz = transform_to_target_srs(source_xyz, source_srs_id, target_srs_id, references)
-        observations: list[GcpObservation] = []
-        for measurement in control_point.findall("Measurement"):
-            source_photo_id = int(text(measurement, "PhotoId"))
-            image_index = photo_index_by_source_id.get(source_photo_id)
-            if image_index is None:
-                continue
-            x, y = observation_transform(source_photo_id, ftext(measurement, "x"), ftext(measurement, "y"))
-            observations.append(GcpObservation(image_index, x, y))
-        observations.sort(key=lambda observation: (observation.image_index, observation.x, observation.y))
         gcps.append(
-            GroundControlPoint(
-                index=len(gcps),
-                name=control_point.findtext("Name", f"gcp_{len(gcps)}"),
-                xyz=xyz,
-                horizontal_accuracy=optional_float(control_point, "HorizontalAccuracy"),
-                vertical_accuracy=optional_float(control_point, "VerticalAccuracy"),
-                is_check_point=control_point.findtext("CheckPoint", "false").strip().lower() == "true",
-                source_srs_id=source_srs_id,
-                source_xyz=source_xyz,
-                category=control_point.findtext("Category", ""),
-                point_type=control_point.findtext("PointType", ""),
-                observations=observations,
+            control_point_to_gcp(
+                control_point,
+                len(gcps),
+                photo_index_by_source_id,
+                references,
+                target_srs_id,
+                observation_transform,
             )
         )
+    return gcps
+
+
+def control_point_to_gcp(
+    control_point: ET.Element,
+    index: int,
+    photo_index_by_source_id: dict[int, int],
+    references: dict[int, SpatialReference],
+    target_srs_id: int,
+    observation_transform: Callable[[int, float, float], tuple[float, float]],
+) -> GroundControlPoint:
+    source_srs_id = int(text(control_point, "SRSId"))
+    position = control_point.find("Position")
+    if position is None:
+        raise ValueError("ControlPoint without Position")
+    source_xyz = tuple(ftext(position, axis) for axis in ("x", "y", "z"))
+    xyz = transform_to_target_srs(source_xyz, source_srs_id, target_srs_id, references)
+    observations: list[GcpObservation] = []
+    for measurement in control_point.findall("Measurement"):
+        source_photo_id = int(text(measurement, "PhotoId"))
+        image_index = photo_index_by_source_id.get(source_photo_id)
+        if image_index is None:
+            continue
+        x, y = observation_transform(source_photo_id, ftext(measurement, "x"), ftext(measurement, "y"))
+        observations.append(GcpObservation(image_index, x, y))
+    observations.sort(key=lambda observation: (observation.image_index, observation.x, observation.y))
+    return GroundControlPoint(
+        index=index,
+        name=control_point.findtext("Name", f"gcp_{index}"),
+        xyz=xyz,
+        horizontal_accuracy=optional_float(control_point, "HorizontalAccuracy"),
+        vertical_accuracy=optional_float(control_point, "VerticalAccuracy"),
+        is_check_point=control_point.findtext("CheckPoint", "false").strip().lower() == "true",
+        source_srs_id=source_srs_id,
+        source_xyz=source_xyz,
+        category=control_point.findtext("Category", ""),
+        point_type=control_point.findtext("PointType", ""),
+        observations=observations,
+    )
+
+
+def remove_from_parent(stack: list[ET.Element], element: ET.Element) -> None:
+    if len(stack) > 1:
+        parent = stack[-2]
+        try:
+            parent.remove(element)
+        except ValueError:
+            pass
+    element.clear()
+
+
+def stream_ground_control_points(
+    input_path: Path,
+    photo_index_by_source_id: dict[int, int],
+    references: dict[int, SpatialReference],
+    target_srs_id: int,
+    observation_transform: Callable[[int, float, float], tuple[float, float]],
+) -> list[GroundControlPoint]:
+    gcps: list[GroundControlPoint] = []
+    stack: list[ET.Element] = []
+    for event, element in ET.iterparse(input_path, events=("start", "end")):
+        if event == "start":
+            stack.append(element)
+            continue
+        if element.tag == "ControlPoint":
+            gcps.append(
+                control_point_to_gcp(
+                    element,
+                    len(gcps),
+                    photo_index_by_source_id,
+                    references,
+                    target_srs_id,
+                    observation_transform,
+                )
+            )
+            remove_from_parent(stack, element)
+        elif element.tag in {"SRS", "Photogroup", "TiePoint"}:
+            remove_from_parent(stack, element)
+        stack.pop()
     return gcps
 
 

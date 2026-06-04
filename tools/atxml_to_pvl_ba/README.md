@@ -11,6 +11,8 @@ Feature.txt
 
 The converter uses the Python standard library for non-GCP blocks. If GCPs must be transformed between coordinate systems, install `pyproj`.
 
+The XML reader is streaming: photogroups, tie points, and control points are processed incrementally with `xml.etree.ElementTree.iterparse`. Large `AT.xml` files therefore do not need to be loaded as a complete XML tree.
+
 ## Target Format
 
 `cal.txt` writes one 3x3 intrinsic matrix per camera group:
