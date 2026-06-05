@@ -379,8 +379,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       <label><span>GCPs</span><input id="toggleGcps" type="checkbox" checked></label>
       <label><span>Original overlay</span><input id="toggleReference" type="checkbox"></label>
       <label><span>Point size</span><input id="pointSize" type="range" min="0.01" max="0.35" value="0.08" step="0.01"></label>
-      <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.8" step="0.05"></label>
-      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="1" step="0.05"></label>
+      <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.5" step="0.05"></label>
+      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="0.1" step="0.05"></label>
       <div class="row"><button class="view-button" id="resetView" title="Reset view">H</button><button class="view-button" id="topView" title="Top view">T</button></div>
     </section>
     <section class="section">
@@ -417,8 +417,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       gcps: true,
       reference: false,
       pointSize: 0.08,
-      cameraOpacity: 0.8,
-      frustumScale: 1.0,
+      cameraOpacity: 0.5,
+      frustumScale: 0.1,
     };
 
     document.getElementById('source').textContent = `${payload.format} - ${payload.source}`;

@@ -169,7 +169,7 @@ powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
   -OutputRoot path\to\QUALITY_VARIANTS
 ```
 
-The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default mode perturbs camera poses and re-triangulates tie points while keeping `Feature.txt` fixed. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
+The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default mode perturbs camera poses and re-triangulates tie points while keeping `Feature.txt` fixed. This mode streams `XYZ.txt` and `Feature.txt` point-by-point and uses sampled scale solving by default for large blocks. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
 
 ### Controlled-AT Release Manifest
 

@@ -529,8 +529,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       <label><span>Cameras</span><input id="toggleCameras" type="checkbox" checked></label>
       <label><span>GCPs</span><input id="toggleGcps" type="checkbox" checked></label>
       <label><span>Point size</span><input id="pointSize" type="range" min="0.01" max="0.35" value="0.08" step="0.01"></label>
-      <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.8" step="0.05"></label>
-      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="1" step="0.05"></label>
+      <label><span>Camera opacity</span><input id="cameraOpacity" type="range" min="0.05" max="1" value="0.5" step="0.05"></label>
+      <label><span>Frustum size</span><input id="frustumScale" type="range" min="0.1" max="5" value="0.1" step="0.05"></label>
       <div class="row"><button id="resetView" title="Reset view">H</button><button id="topView" title="Top view">T</button></div>
     </section>
     <section class="section">
@@ -617,7 +617,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     const baseFrustumPositions = new Float32Array(data.cameras.frustumVertices.flat());
     const frustumGeometry = new THREE.BufferGeometry();
     frustumGeometry.setAttribute('position', new THREE.BufferAttribute(baseFrustumPositions.slice(), 3));
-    const frustumMaterial = new THREE.LineBasicMaterial({ color: 0x52c7b8, transparent: true, opacity: 0.8 });
+    const frustumMaterial = new THREE.LineBasicMaterial({ color: 0x52c7b8, transparent: true, opacity: 0.5 });
     const frustums = new THREE.LineSegments(frustumGeometry, frustumMaterial);
     scene.add(frustums);
 
@@ -678,6 +678,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
+    setFrustumScale(0.1);
     resetView(false);
     renderer.setAnimationLoop(() => {
       controls.update();

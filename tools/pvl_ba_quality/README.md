@@ -86,6 +86,8 @@ python .\generate_noisy_pvl_ba.py `
 
 This uses `--mode init-pose-triangulate` and the `main` RMSE preset.
 
+The default pose-triangulation mode is streaming. Cameras and pose-noise vectors stay in memory, while `XYZ.txt` and `Feature.txt` are read point-by-point. The generated `Cam-*.txt` and `XYZ.txt` are rewritten, while static files such as `Feature.txt`, `cal.txt`, and GCP sidecars are hard-linked by default when the filesystem supports it.
+
 Use custom levels:
 
 ```powershell
@@ -120,4 +122,27 @@ For `init-pose-triangulate`, `noise_metadata.json` also records camera-center er
 
 ## Scale Notes
 
-This generator currently reads PVL-BA cameras, points, and feature tracks into memory and repeatedly re-triangulates all points during pose-noise bisection. It is appropriate for sampled blocks and moderate releases; for 50,000+ image blocks, run it on a workstation or cluster with sufficient RAM and time, or split release generation by dataset.
+`init-pose-triangulate` supports two scale solvers:
+
+```text
+--scale-solver sampled
+--scale-solver exact
+```
+
+`sampled` is the default and is recommended for large releases. It estimates the pose-noise scale from a deterministic point sample, then checks the scale on the full dataset. If the full RMSE is outside `--full-refine-tolerance` (default `0.02`), it runs up to `--full-refine-iterations` full-dataset bisection passes (default `12`) before writing the final dataset, stopping early once the tolerance is met. Existing variants are considered complete only when `noise_metadata.json` reports an `actual_rmse_px` within this tolerance.
+
+`exact` runs full-dataset bisection and gives the closest target RMSE, but it is much slower on large blocks.
+
+Stress levels can expose non-monotonic pose-scale behavior: a small number of nearly degenerate re-triangulated tracks may create sharp RMSE spikes, so plain bisection can miss a target such as `500 px`. In that case, first diagnose the scale/RMSE curve, then pin a known-good scale:
+
+```powershell
+python .\generate_noisy_pvl_ba.py `
+  --input-dir path\to\original `
+  --output-root path\to\quality `
+  --target-rmse 500 `
+  --pose-scale-override 500=0.894986
+```
+
+The generated metadata records `pose_scale_override`, `target_relative_error`, and `target_within_tolerance`. Use `--full-search-steps` only for targeted investigations, because each full-search probe scans the complete `XYZ.txt` and `Feature.txt`.
+
+Use `--static-file-policy hardlink` to reduce local disk usage for quality variants. Use `--static-file-policy copy` when every variant must be physically independent on disk.
