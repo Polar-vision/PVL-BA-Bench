@@ -28,6 +28,11 @@ class PoseNoise:
 
 
 @dataclass(frozen=True)
+class PointNoise:
+    position: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class ObservationRef:
     point_index: int
     observation_index: int
@@ -89,6 +94,8 @@ class ScaleCandidate:
 
 MAIN_RMSE_PRESET = (2.0, 5.0, 10.0, 20.0, 50.0, 100.0)
 STRESS_RMSE_PRESET = (200.0, 500.0)
+QUALITY_MODES = ("auto", "init-pose-triangulate", "init-pose-point", "observation-noise")
+MASK64 = (1 << 64) - 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,9 +111,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=20260603)
     parser.add_argument("--prefix", default="problem")
-    parser.add_argument("--mode", choices=("init-pose-triangulate", "observation-noise"), default="init-pose-triangulate")
+    parser.add_argument(
+        "--mode",
+        choices=QUALITY_MODES,
+        default="auto",
+        help="Quality mode. 'auto' uses pose triangulation for main levels and pose+point perturbation for stress levels.",
+    )
     parser.add_argument("--rotation-weight-deg", type=float, default=1.0, help="Rotation noise at unit scale, in degrees")
     parser.add_argument("--translation-weight", type=float, default=1.0, help="Translation noise at unit scale, in world units")
+    parser.add_argument("--point-weight", type=float, default=1.0, help="3D point noise at unit scale, in world units")
     parser.add_argument("--max-scale", type=float, default=1.0, help="Initial upper scale for pose-noise bisection")
     parser.add_argument("--bisection-iterations", type=int, default=24)
     parser.add_argument("--scale-solver", choices=("sampled", "exact"), default="sampled")
@@ -161,6 +174,12 @@ def target_rmse_values(args: argparse.Namespace) -> list[float]:
     if args.preset == "stress":
         return list(STRESS_RMSE_PRESET)
     return list(MAIN_RMSE_PRESET + STRESS_RMSE_PRESET)
+
+
+def resolved_mode_for_target(args: argparse.Namespace, target_rmse: float) -> str:
+    if args.mode != "auto":
+        return args.mode
+    return "init-pose-point" if target_rmse >= min(STRESS_RMSE_PRESET) else "init-pose-triangulate"
 
 
 def rotation_from_euler(ey: float, ex: float, ez: float) -> list[list[float]]:
@@ -340,6 +359,36 @@ def make_pose_noises(camera_count: int, rng: random.Random) -> list[PoseNoise]:
         )
         for _ in range(camera_count)
     ]
+
+
+def splitmix64(value: int) -> int:
+    value = (value + 0x9E3779B97F4A7C15) & MASK64
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & MASK64
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & MASK64
+    return (value ^ (value >> 31)) & MASK64
+
+
+def uniform01_from_u64(value: int) -> float:
+    return ((value >> 11) + 1) / ((1 << 53) + 1)
+
+
+def normal_pair(seed: int, point_index: int, lane: int) -> tuple[float, float]:
+    mixed = (int(seed) & MASK64) ^ ((point_index + 1) * 0x9E3779B97F4A7C15) ^ (lane * 0xD1B54A32D192ED03)
+    u1 = uniform01_from_u64(splitmix64(mixed))
+    u2 = uniform01_from_u64(splitmix64(mixed ^ 0x94D049BB133111EB))
+    radius = math.sqrt(-2.0 * math.log(u1))
+    angle = 2.0 * math.pi * u2
+    return radius * math.cos(angle), radius * math.sin(angle)
+
+
+def point_noise_for(seed: int, point_index: int) -> PointNoise:
+    x, y = normal_pair(seed, point_index, 0)
+    z, _ = normal_pair(seed, point_index, 1)
+    return PointNoise((x, y, z))
+
+
+def apply_point_noise(point: tuple[float, float, float], noise: PointNoise, scale: float, point_weight: float) -> tuple[float, float, float]:
+    return tuple(point[index] + scale * point_weight * noise.position[index] for index in range(3))
 
 
 def ray_from_observation(camera: Camera, u: float, v: float) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -545,7 +594,13 @@ def write_noisy_gcp_observations(path: Path, output_path: Path, scale: float, rn
 
 
 def quality_tag(mode: str) -> str:
-    return "init-rmse" if mode == "init-pose-triangulate" else "obs-rmse"
+    if mode == "init-pose-triangulate":
+        return "init-rmse"
+    if mode == "init-pose-point":
+        return "joint-rmse"
+    if mode == "observation-noise":
+        return "obs-rmse"
+    raise ValueError(f"Unsupported quality mode: {mode}")
 
 
 def dataset_slug(
@@ -564,6 +619,16 @@ def dataset_slug(
 
 
 def count_gcps(input_dir: Path) -> int:
+    obs_path = input_dir / "gcp_observations.txt"
+    if obs_path.exists():
+        count = 0
+        for line in obs_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            tokens = line.split()
+            if int(tokens[1]) > 0:
+                count += 1
+        return count
     path = input_dir / "gcp.txt"
     if not path.exists():
         return 0
@@ -574,7 +639,12 @@ def target_relative_error(rmse: float, target_rmse: float) -> float:
     return abs(rmse - target_rmse) / target_rmse if target_rmse > 0.0 else 0.0
 
 
-def variant_complete(path: Path, target_rmse: float | None = None, tolerance: float | None = None) -> bool:
+def variant_complete(
+    path: Path,
+    target_rmse: float | None = None,
+    tolerance: float | None = None,
+    mode: str | None = None,
+) -> bool:
     metadata_path = path / "noise_metadata.json"
     complete = (
         (path / "cal.txt").exists()
@@ -587,6 +657,8 @@ def variant_complete(path: Path, target_rmse: float | None = None, tolerance: fl
         return complete
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if mode is not None and metadata.get("mode") != mode:
+            return False
         actual_rmse = float(metadata["actual_rmse_px"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -640,11 +712,12 @@ def make_base_metadata(
     focal: float,
     base_rmse: float,
     target_rmse: float,
+    mode: str,
 ) -> dict:
     return {
         "source": str(args.input_dir.resolve()),
         "dataset_name": output_dir.name,
-        "mode": args.mode,
+        "mode": mode,
         "base_rmse_px": base_rmse,
         "base_rmse_normalized": base_rmse / focal,
         "target_rmse_px": target_rmse,
@@ -694,7 +767,18 @@ def generate_observation_noise_variant(
             scale,
             local_rng,
         )
-    metadata = make_base_metadata(args, output_dir, cameras, len(points), observation_count, gcp_count, focal, base_rmse, target_rmse)
+    metadata = make_base_metadata(
+        args,
+        output_dir,
+        cameras,
+        len(points),
+        observation_count,
+        gcp_count,
+        focal,
+        base_rmse,
+        target_rmse,
+        "observation-noise",
+    )
     metadata.update(
         {
             "generation_strategy": "image observation noise",
@@ -787,6 +871,57 @@ def rmse_for_input_stream(input_dir: Path, cameras: list[Camera], sample_step: i
             observation_count += 1
     rmse = math.sqrt(sum_squared / observation_count) if observation_count else 0.0
     return GeometryStats(rmse=rmse, points=point_count, observations=observation_count)
+
+
+def stream_geometry_for_pose_point_scale(
+    input_dir: Path,
+    cameras: list[Camera],
+    pose_noises: list[PoseNoise],
+    scale: float,
+    rotation_weight_deg: float,
+    translation_weight: float,
+    point_weight: float,
+    seed: int,
+    sample_step: int = 1,
+    xyz_output: Path | None = None,
+    include_point_errors: bool = False,
+    point_error_sample_step: int = 1,
+) -> tuple[list[Camera], GeometryStats]:
+    noisy_cameras = apply_pose_noise(cameras, pose_noises, scale, rotation_weight_deg, translation_weight)
+    sum_squared = 0.0
+    observation_count = 0
+    point_count = 0
+    error_accumulator = ErrorAccumulator(
+        sample_step=point_error_sample_step,
+        samples=[] if include_point_errors else None,
+    )
+    xyz_fh = xyz_output.open("w", encoding="utf-8", newline="\n") if xyz_output is not None else None
+    try:
+        for point_index, fallback_point, observations in iter_tracks(input_dir):
+            if not should_use_sample(point_index, sample_step):
+                continue
+            point = apply_point_noise(fallback_point, point_noise_for(seed, point_index), scale, point_weight)
+            if xyz_fh is not None:
+                x, y, z = point
+                xyz_fh.write(f"{x:.12f} {y:.12f} {z:.12f}\n")
+            if include_point_errors:
+                error = math.sqrt(sum((point[index] - fallback_point[index]) ** 2 for index in range(3)))
+                error_accumulator.add(error, point_index)
+            point_count += 1
+            for image_index, observed_u, observed_v in observations:
+                projected_u, projected_v = project(point, noisy_cameras[image_index])
+                sum_squared += (projected_u - observed_u) ** 2 + (projected_v - observed_v) ** 2
+                observation_count += 1
+    finally:
+        if xyz_fh is not None:
+            xyz_fh.close()
+    rmse = math.sqrt(sum_squared / observation_count) if observation_count else 0.0
+    return noisy_cameras, GeometryStats(
+        rmse=rmse,
+        points=point_count,
+        observations=observation_count,
+        point_error_summary={"tie_point_error_world": error_accumulator.to_summary()} if include_point_errors else None,
+    )
 
 
 def solve_pose_scale_streaming(
@@ -963,6 +1098,188 @@ def refine_pose_scale_full_stream(
     return best.scale, best.cameras, best.rmse, passes
 
 
+def solve_pose_point_scale_streaming(
+    args: argparse.Namespace,
+    cameras: list[Camera],
+    point_count: int,
+    pose_noises: list[PoseNoise],
+    target_rmse: float,
+) -> tuple[float, list[Camera], float, int, int]:
+    sample_step = 1 if args.scale_solver == "exact" else sample_step_for_points(point_count, args.sample_max_points)
+
+    def relative_error(rmse: float) -> float:
+        return target_relative_error(rmse, target_rmse)
+
+    def better(candidate: ScaleCandidate, best: ScaleCandidate) -> bool:
+        return relative_error(candidate.rmse) < relative_error(best.rmse)
+
+    low = 0.0
+    high = max(args.max_scale, 1e-9)
+    high_cameras, high_stats = stream_geometry_for_pose_point_scale(
+        args.input_dir,
+        cameras,
+        pose_noises,
+        high,
+        args.rotation_weight_deg,
+        args.translation_weight,
+        args.point_weight,
+        args.seed,
+        sample_step,
+    )
+    for _ in range(40):
+        if high_stats.rmse >= target_rmse:
+            break
+        high *= 2.0
+        high_cameras, high_stats = stream_geometry_for_pose_point_scale(
+            args.input_dir,
+            cameras,
+            pose_noises,
+            high,
+            args.rotation_weight_deg,
+            args.translation_weight,
+            args.point_weight,
+            args.seed,
+            sample_step,
+        )
+    else:
+        raise RuntimeError(f"Could not reach target RMSE {target_rmse} px with pose+point perturbation")
+
+    best = ScaleCandidate(high, high_stats.rmse, high_cameras)
+    for _ in range(args.bisection_iterations):
+        mid = (low + high) * 0.5
+        mid_cameras, mid_stats = stream_geometry_for_pose_point_scale(
+            args.input_dir,
+            cameras,
+            pose_noises,
+            mid,
+            args.rotation_weight_deg,
+            args.translation_weight,
+            args.point_weight,
+            args.seed,
+            sample_step,
+        )
+        candidate = ScaleCandidate(mid, mid_stats.rmse, mid_cameras)
+        if better(candidate, best):
+            best = candidate
+        if relative_error(best.rmse) <= args.full_refine_tolerance:
+            break
+        if mid_stats.rmse < target_rmse:
+            low = mid
+        else:
+            high = mid
+
+    full_refine_passes = 0
+    if sample_step > 1 and args.full_refine_iterations > 0:
+        best_scale, best_cameras, best_rmse, full_refine_passes = refine_pose_point_scale_full_stream(
+            args,
+            cameras,
+            pose_noises,
+            target_rmse,
+            best.scale,
+        )
+    else:
+        best_scale, best_cameras, best_rmse = best.scale, best.cameras, best.rmse
+
+    return best_scale, best_cameras, best_rmse, sample_step, full_refine_passes
+
+
+def refine_pose_point_scale_full_stream(
+    args: argparse.Namespace,
+    cameras: list[Camera],
+    pose_noises: list[PoseNoise],
+    target_rmse: float,
+    initial_scale: float,
+) -> tuple[float, list[Camera], float, int]:
+    passes = 0
+
+    def evaluate(scale: float) -> ScaleCandidate:
+        nonlocal passes
+        passes += 1
+        candidate_cameras, stats = stream_geometry_for_pose_point_scale(
+            args.input_dir,
+            cameras,
+            pose_noises,
+            max(scale, 0.0),
+            args.rotation_weight_deg,
+            args.translation_weight,
+            args.point_weight,
+            args.seed,
+            1,
+        )
+        return ScaleCandidate(max(scale, 0.0), stats.rmse, candidate_cameras)
+
+    def relative_error(rmse: float) -> float:
+        return target_relative_error(rmse, target_rmse)
+
+    def better(candidate: ScaleCandidate, best: ScaleCandidate) -> bool:
+        return relative_error(candidate.rmse) < relative_error(best.rmse)
+
+    best = evaluate(initial_scale)
+    best_error = relative_error(best.rmse)
+    if best_error <= args.full_refine_tolerance:
+        return best.scale, best.cameras, best.rmse, passes
+
+    if best.rmse >= target_rmse:
+        low = 0.0
+        high = best.scale
+    else:
+        low = best.scale
+        high = max(best.scale * 2.0, 1e-9)
+        for _ in range(40):
+            candidate = evaluate(high)
+            high_error = relative_error(candidate.rmse)
+            if better(candidate, best):
+                best = candidate
+                best_error = high_error
+                if best_error <= args.full_refine_tolerance:
+                    return best.scale, best.cameras, best.rmse, passes
+            if candidate.rmse >= target_rmse:
+                break
+            low = high
+            high *= 2.0
+        else:
+            return best.scale, best.cameras, best.rmse, passes
+
+    for _ in range(args.full_refine_iterations):
+        mid = (low + high) * 0.5
+        candidate = evaluate(mid)
+        mid_error = relative_error(candidate.rmse)
+        if better(candidate, best):
+            best = candidate
+            best_error = mid_error
+            if best_error <= args.full_refine_tolerance:
+                break
+        if candidate.rmse < target_rmse:
+            low = mid
+        else:
+            high = mid
+
+    if best_error <= args.full_refine_tolerance or args.full_search_steps <= 0:
+        return best.scale, best.cameras, best.rmse, passes
+
+    search_center = best.scale
+    search_radius = max(abs(high - low), search_center * 0.01, 1e-6)
+    for _ in range(max(1, args.full_refine_iterations)):
+        steps = max(2, args.full_search_steps)
+        improved = False
+        for step_index in range(steps + 1):
+            scale = search_center - search_radius + (2.0 * search_radius * step_index / steps)
+            candidate = evaluate(scale)
+            candidate_error = relative_error(candidate.rmse)
+            if better(candidate, best):
+                best = candidate
+                best_error = candidate_error
+                search_center = candidate.scale
+                improved = True
+                if best_error <= args.full_refine_tolerance:
+                    return best.scale, best.cameras, best.rmse, passes
+        search_radius *= 0.5
+        if not improved and search_radius < max(search_center * 1e-6, 1e-8):
+            break
+
+    return best.scale, best.cameras, best.rmse, passes
+
+
 def solve_pose_scale(
     args: argparse.Namespace,
     cameras: list[Camera],
@@ -1046,7 +1363,16 @@ def generate_pose_triangulate_variant(
     )
     write_cam(cam_output, noisy_cameras)
     metadata = make_base_metadata(
-        args, output_dir, cameras, point_count, observation_count, gcp_count, focal, base_rmse, target_rmse
+        args,
+        output_dir,
+        cameras,
+        point_count,
+        observation_count,
+        gcp_count,
+        focal,
+        base_rmse,
+        target_rmse,
+        "init-pose-triangulate",
     )
     metadata.update(
         {
@@ -1083,6 +1409,98 @@ def generate_pose_triangulate_variant(
     )
 
 
+def generate_pose_point_variant(
+    args: argparse.Namespace,
+    output_dir: Path,
+    cameras: list[Camera],
+    point_count: int,
+    observation_count: int,
+    gcp_count: int,
+    focal: float,
+    base_rmse: float,
+    target_rmse: float,
+    pose_noises: list[PoseNoise],
+) -> None:
+    override_scale = pose_scale_override_for(args, target_rmse)
+    sample_step = 1 if args.scale_solver == "exact" else sample_step_for_points(point_count, args.sample_max_points)
+    if override_scale is None:
+        scale, noisy_cameras, scale_rmse, sample_step, full_refine_passes = solve_pose_point_scale_streaming(
+            args, cameras, point_count, pose_noises, target_rmse
+        )
+        scale_solver = args.scale_solver
+    else:
+        scale = override_scale
+        noisy_cameras = apply_pose_noise(cameras, pose_noises, scale, args.rotation_weight_deg, args.translation_weight)
+        scale_rmse = 0.0
+        full_refine_passes = 0
+        scale_solver = "override"
+    cam_output = prepare_static_dataset(args.input_dir, output_dir, args.static_file_policy)
+    noisy_cameras, final_stats = stream_geometry_for_pose_point_scale(
+        args.input_dir,
+        cameras,
+        pose_noises,
+        scale,
+        args.rotation_weight_deg,
+        args.translation_weight,
+        args.point_weight,
+        args.seed,
+        1,
+        output_dir / "XYZ.txt",
+        include_point_errors=True,
+        point_error_sample_step=sample_step_for_points(point_count, args.error_sample_max_points),
+    )
+    write_cam(cam_output, noisy_cameras)
+    metadata = make_base_metadata(
+        args,
+        output_dir,
+        cameras,
+        point_count,
+        observation_count,
+        gcp_count,
+        focal,
+        base_rmse,
+        target_rmse,
+        "init-pose-point",
+    )
+    metadata.update(
+        {
+            "generation_strategy": "joint camera-pose and 3D tie-point initialization perturbation",
+            "noise_model": "shared-scale Gaussian camera-pose and 3D tie-point initialization noise",
+            "pose_noise_scale": scale,
+            "point_noise_scale_world": scale * args.point_weight,
+            "pose_noise_direction": "shared across target RMSE levels for this run",
+            "point_noise_direction": "deterministic per tie point from seed and point index",
+            "rotation_weight_deg": args.rotation_weight_deg,
+            "translation_weight": args.translation_weight,
+            "point_weight": args.point_weight,
+            "scale_solver": scale_solver,
+            "scale_solver_sample_step": sample_step,
+            "scale_solver_rmse_px": final_stats.rmse if override_scale is not None else scale_rmse,
+            "full_refine_iterations": args.full_refine_iterations,
+            "full_refine_tolerance": args.full_refine_tolerance,
+            "full_refine_passes": full_refine_passes,
+            "pose_scale_override": override_scale,
+            "static_file_policy": args.static_file_policy,
+            "actual_rmse_px": final_stats.rmse,
+            "actual_rmse_normalized": final_stats.rmse / focal,
+            "target_relative_error": target_relative_error(final_stats.rmse, target_rmse),
+            "target_tolerance": args.full_refine_tolerance,
+            "target_within_tolerance": target_relative_error(final_stats.rmse, target_rmse) <= args.full_refine_tolerance,
+            "points_retriangulated": False,
+            "feature_observations_perturbed": 0,
+            "gcp_observations_perturbed": 0,
+        }
+    )
+    metadata.update(pose_error_summary(cameras, noisy_cameras))
+    if final_stats.point_error_summary:
+        metadata.update(final_stats.point_error_summary)
+    write_metadata(output_dir / "noise_metadata.json", metadata)
+    print(
+        f"wrote {output_dir} joint_scale={scale:.6f} "
+        f"solver_rmse={scale_rmse:.6f} actual_rmse={final_stats.rmse:.6f} px"
+    )
+
+
 def main() -> None:
     args = parse_args()
     cameras = read_cameras(args.input_dir)
@@ -1096,19 +1514,21 @@ def main() -> None:
     print(f"base rmse: {base_rmse:.6f} px")
 
     args.output_root.mkdir(parents=True, exist_ok=True)
+    targets = target_rmse_values(args)
+    target_modes = [resolved_mode_for_target(args, target_rmse) for target_rmse in targets]
     points: list[tuple[float, float, float]] | None = None
     tracks: list[list[tuple[int, float, float]]] | None = None
-    if args.mode == "observation-noise":
+    if any(mode == "observation-noise" for mode in target_modes):
         rng = random.Random(args.seed)
         points = read_points(args.input_dir / "XYZ.txt")
         tracks = read_feature(args.input_dir / "Feature.txt")
         refs, base_rmse = collect_observations(points, tracks, cameras, rng)
         observation_count = len(refs)
     pose_noises = make_pose_noises(len(cameras), random.Random(f"{args.seed}:pose"))
-    for target_rmse in target_rmse_values(args):
+    for target_rmse, target_mode in zip(targets, target_modes):
         if target_rmse <= base_rmse:
             raise ValueError(f"Target RMSE {target_rmse} must be larger than base RMSE {base_rmse:.6f}")
-        print(f"target rmse: {target_rmse:g} px", flush=True)
+        print(f"target rmse: {target_rmse:g} px ({target_mode})", flush=True)
         output_dir = args.output_root / dataset_slug(
             args.prefix,
             len(cameras),
@@ -1116,12 +1536,12 @@ def main() -> None:
             observation_count,
             gcp_count,
             target_rmse,
-            args.mode,
+            target_mode,
         )
-        if variant_complete(output_dir, target_rmse, args.full_refine_tolerance):
+        if variant_complete(output_dir, target_rmse, args.full_refine_tolerance, target_mode):
             print(f"skip existing complete variant {output_dir}", flush=True)
             continue
-        if args.mode == "observation-noise":
+        if target_mode == "observation-noise":
             assert points is not None and tracks is not None
             generate_observation_noise_variant(
                 args,
@@ -1134,6 +1554,19 @@ def main() -> None:
                 focal,
                 base_rmse,
                 target_rmse,
+            )
+        elif target_mode == "init-pose-point":
+            generate_pose_point_variant(
+                args,
+                output_dir,
+                cameras,
+                point_count,
+                observation_count,
+                gcp_count,
+                focal,
+                base_rmse,
+                target_rmse,
+                pose_noises,
             )
         else:
             generate_pose_triangulate_variant(

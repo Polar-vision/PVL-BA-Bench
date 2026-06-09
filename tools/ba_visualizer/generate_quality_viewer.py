@@ -13,7 +13,7 @@ from pathlib import Path
 import generate_viewer
 
 
-QUALITY_RE = re.compile(r"(init|obs)-rmse(\d+)p(\d+)px", re.IGNORECASE)
+QUALITY_RE = re.compile(r"(init|joint|obs)-rmse(\d+)p(\d+)px", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-dir", type=Path, help="Optional PVL-BA original/reference dataset directory")
     parser.add_argument("--output", required=True, type=Path, help="Output HTML file")
     parser.add_argument("--max-points", type=int, default=100_000, help="Maximum sparse points per quality level")
+    parser.add_argument(
+        "--metric-max-points",
+        type=int,
+        default=100_000,
+        help="Maximum tie points used for per-level viewer metric estimates",
+    )
     parser.add_argument("--camera-stride", type=int, default=1, help="Embed every Nth camera frustum")
     parser.add_argument(
         "--stress-threshold",
@@ -74,29 +80,14 @@ def discover_datasets(input_root: Path, stress_threshold: float, reference_dir: 
                 is_reference=True,
             )
         )
+    parsed_paths = []
     for path in sorted(input_root.iterdir()):
         if not path.is_dir() or not is_pvl_ba_dir(path):
             continue
         name = path.name
         parsed = rmse_from_name(name)
         if parsed:
-            mode_tag, target_rmse_px = parsed
-            label_prefix = "init" if mode_tag == "init" else "obs"
-            label = f"{label_prefix} {target_rmse_px:g} px"
-            group = "Stress Test" if target_rmse_px >= stress_threshold else "Main Benchmark"
-            sort_group = 2 if group == "Stress Test" else 1
-            datasets.append(
-                QualityDataset(
-                    path=path,
-                    name=name,
-                    label=label,
-                    group=group,
-                    sort_key=(sort_group, target_rmse_px, name),
-                    target_rmse_px=target_rmse_px,
-                    mode_tag=mode_tag,
-                    is_reference=False,
-                )
-            )
+            parsed_paths.append((path, name, parsed[0], parsed[1]))
         elif reference_dir is None and ("original" in name.lower() or "reference" in name.lower()):
             datasets.append(
                 QualityDataset(
@@ -110,6 +101,29 @@ def discover_datasets(input_root: Path, stress_threshold: float, reference_dir: 
                     is_reference=True,
                 )
             )
+    joint_stress_targets = {
+        target_rmse_px for _path, _name, mode_tag, target_rmse_px in parsed_paths
+        if mode_tag == "joint" and target_rmse_px >= stress_threshold
+    }
+    for path, name, mode_tag, target_rmse_px in parsed_paths:
+        if mode_tag == "init" and target_rmse_px >= stress_threshold and target_rmse_px in joint_stress_targets:
+            continue
+        label_prefix = {"init": "init", "joint": "pose+point", "obs": "obs"}.get(mode_tag, mode_tag)
+        label = f"{label_prefix} {target_rmse_px:g} px"
+        group = "Stress Test" if target_rmse_px >= stress_threshold else "Main Benchmark"
+        sort_group = 2 if group == "Stress Test" else 1
+        datasets.append(
+            QualityDataset(
+                path=path,
+                name=name,
+                label=label,
+                group=group,
+                sort_key=(sort_group, target_rmse_px, name),
+                target_rmse_px=target_rmse_px,
+                mode_tag=mode_tag,
+                is_reference=False,
+            )
+        )
     datasets.sort(key=lambda item: item.sort_key)
     if not datasets:
         raise FileNotFoundError(f"No PVL-BA datasets found below {input_root}")
@@ -149,21 +163,35 @@ def error_summary(errors: list[float], sum_squared: float) -> dict:
     }
 
 
-def read_pvl_points(input_dir: Path) -> list[tuple[float, float, float]]:
-    return [tuple(map(float, line.split())) for line in (input_dir / "XYZ.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
+def count_pvl_points(input_dir: Path) -> int:
+    with (input_dir / "XYZ.txt").open(encoding="utf-8") as xyz_file:
+        return sum(1 for line in xyz_file if line.strip())
 
 
-def compute_tie_metrics(input_dir: Path, cameras: list[generate_viewer.PvlCamera]) -> dict:
-    points = read_pvl_points(input_dir)
+def metric_sample_step(input_dir: Path, metric_max_points: int) -> int:
+    if metric_max_points <= 0:
+        return 1
+    return max(1, math.ceil(count_pvl_points(input_dir) / metric_max_points))
+
+
+def compute_tie_metrics(input_dir: Path, cameras: list[generate_viewer.PvlCamera], metric_max_points: int) -> dict:
+    sample_step = metric_sample_step(input_dir, metric_max_points)
     errors: list[float] = []
     sum_squared = 0.0
     depth_min = float("inf")
     depth_max = -float("inf")
     negative_depth_count = 0
-    with (input_dir / "Feature.txt").open(encoding="utf-8") as feature_file:
-        for point, line in zip(points, feature_file):
+    point_count = 0
+    with (input_dir / "XYZ.txt").open(encoding="utf-8") as xyz_file, (input_dir / "Feature.txt").open(
+        encoding="utf-8"
+    ) as feature_file:
+        for point_index, (xyz_line, line) in enumerate(zip(xyz_file, feature_file)):
             if not line.strip():
                 continue
+            if point_index % sample_step != 0:
+                continue
+            point = tuple(map(float, xyz_line.split()))
+            point_count += 1
             tokens = line.split()
             track_len = int(tokens[0])
             for observation_index in range(track_len):
@@ -187,6 +215,8 @@ def compute_tie_metrics(input_dir: Path, cameras: list[generate_viewer.PvlCamera
     summary["negativeDepthCount"] = negative_depth_count
     summary["depthMin"] = depth_min if errors else 0.0
     summary["depthMax"] = depth_max if errors else 0.0
+    summary["sampledPoints"] = point_count
+    summary["sampleStep"] = sample_step
     return summary
 
 
@@ -230,16 +260,18 @@ def compute_gcp_metrics(input_dir: Path, cameras: list[generate_viewer.PvlCamera
     return error_summary(errors, sum_squared)
 
 
-def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path) -> dict:
+def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path, metric_max_points: int) -> dict:
     cameras = generate_viewer.read_pvl_cameras(input_dir)
-    tie_metrics = compute_tie_metrics(input_dir, cameras)
+    tie_metrics = compute_tie_metrics(input_dir, cameras, metric_max_points)
     gcp_metrics = compute_gcp_metrics(input_dir, cameras)
     metadata = payload.get("noiseMetadata") or {}
+    actual_rmse = metadata.get("actual_rmse_px")
     stats = payload["stats"]
     stats.update(
         {
             "observations": tie_metrics["count"],
-            "rmsePx": tie_metrics["rmsePx"],
+            "rmsePx": actual_rmse if actual_rmse is not None else tie_metrics["rmsePx"],
+            "sampleRmsePx": tie_metrics["rmsePx"],
             "meanPx": tie_metrics["meanPx"],
             "medianPx": tie_metrics["medianPx"],
             "p90Px": tie_metrics["p90Px"],
@@ -249,6 +281,8 @@ def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path) -> d
             "negativeDepthCount": tie_metrics["negativeDepthCount"],
             "depthMin": tie_metrics["depthMin"],
             "depthMax": tie_metrics["depthMax"],
+            "metricSampledPoints": tie_metrics["sampledPoints"],
+            "metricSampleStep": tie_metrics["sampleStep"],
             "gcpObservations": gcp_metrics.get("count", 0),
             "gcpRmsePx": gcp_metrics.get("rmsePx"),
             "gcpP95Px": gcp_metrics.get("p95Px"),
@@ -295,6 +329,7 @@ def global_bounds(datasets: list[dict]) -> dict:
 def build_quality_payload(
     input_root: Path,
     max_points: int,
+    metric_max_points: int,
     camera_stride: int,
     stress_threshold: float,
     reference_dir: Path | None = None,
@@ -304,7 +339,10 @@ def build_quality_payload(
     for dataset in discovered:
         payload = generate_viewer.build_pvl_payload(dataset.path.resolve(), max_points, camera_stride)
         raw_items.append((dataset, payload, generate_viewer.read_pvl_cameras(dataset.path.resolve())))
-    datasets = [enrich_payload(payload, dataset, dataset.path.resolve()) for dataset, payload, _cameras in raw_items]
+    datasets = [
+        enrich_payload(payload, dataset, dataset.path.resolve(), metric_max_points)
+        for dataset, payload, _cameras in raw_items
+    ]
     shared_bounds = global_bounds(datasets)
     reference_index = next((index for index, dataset in enumerate(datasets) if dataset["isReference"]), 0)
     reference_diagonal = datasets[reference_index]["bounds"]["diagonal"]
@@ -627,7 +665,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       gcpList.innerHTML = '';
       gcpList.className = '';
       if (data.gcps.length === 0) {
-        gcpList.textContent = 'No GCP sidecar files found.';
+        gcpList.textContent = 'No observed GCPs found.';
         gcpList.className = 'empty';
         return;
       }
@@ -715,6 +753,7 @@ def main() -> None:
     payload = build_quality_payload(
         args.input_root.resolve(),
         args.max_points,
+        args.metric_max_points,
         args.camera_stride,
         args.stress_threshold,
         args.reference_dir.resolve() if args.reference_dir else None,

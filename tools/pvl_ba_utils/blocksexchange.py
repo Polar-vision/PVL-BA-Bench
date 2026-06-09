@@ -251,12 +251,17 @@ def stream_ground_control_points(
     return gcps
 
 
+def observed_ground_control_points(gcps: list[GroundControlPoint]) -> list[GroundControlPoint]:
+    return [gcp for gcp in gcps if gcp.observations]
+
+
 def write_gcp_files(metadata_path: Path, observations_path: Path, gcps: list[GroundControlPoint]) -> None:
+    observed_gcps = observed_ground_control_points(gcps)
     with metadata_path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write("# GCP_ID NAME X Y Z H_ACC V_ACC IS_CHECK_POINT SOURCE_SRS_ID SOURCE_X SOURCE_Y SOURCE_Z CATEGORY POINT_TYPE\n")
-        for gcp in gcps:
+        for output_index, gcp in enumerate(observed_gcps):
             fields = [
-                str(gcp.index),
+                str(output_index),
                 gcp.name,
                 f"{gcp.xyz[0]:.12f}",
                 f"{gcp.xyz[1]:.12f}",
@@ -276,8 +281,8 @@ def write_gcp_files(metadata_path: Path, observations_path: Path, gcps: list[Gro
 
     with observations_path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write("# GCP_ID NUM_OBSERVATIONS IMAGE_INDEX X Y ...\n")
-        for gcp in gcps:
-            fields = [str(gcp.index), str(len(gcp.observations))]
+        for output_index, gcp in enumerate(observed_gcps):
+            fields = [str(output_index), str(len(gcp.observations))]
             for observation in gcp.observations:
                 fields.extend((str(observation.image_index), f"{observation.x:.12f}", f"{observation.y:.12f}"))
             fh.write(" ".join(fields))

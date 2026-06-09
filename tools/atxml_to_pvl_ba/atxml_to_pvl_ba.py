@@ -15,6 +15,7 @@ from pvl_ba_utils.blocksexchange import (  # noqa: E402
     SpatialReference,
     control_point_to_gcp,
     has_complete_pose,
+    observed_ground_control_points,
     remove_from_parent,
     write_gcp_files,
 )
@@ -386,16 +387,20 @@ def main() -> None:
         target_srs_id,
         args.undistort_iterations,
     )
-    if gcps:
-        write_gcp_files(args.output / "gcp.txt", args.output / "gcp_observations.txt", gcps)
+    observed_gcps = observed_ground_control_points(gcps)
+    if observed_gcps:
+        write_gcp_files(args.output / "gcp.txt", args.output / "gcp_observations.txt", observed_gcps)
+    else:
+        (args.output / "gcp.txt").unlink(missing_ok=True)
+        (args.output / "gcp_observations.txt").unlink(missing_ok=True)
 
-    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
+    gcp_observations = sum(len(gcp.observations) for gcp in observed_gcps)
     print(f"Wrote PVL-BA format to {args.output.resolve()}")
     print(f"  intrinsics groups: {len(intrinsics_by_group)}")
     print(f"  cameras: {len(photos)}")
     print(f"  points: {point_count}")
     print(f"  observations: {observations}")
-    print(f"  gcps: {len(gcps)}")
+    print(f"  gcps: {len(observed_gcps)}")
     print(f"  gcp observations: {gcp_observations}")
     print("  Feature.txt coordinates are undistorted pixel coordinates.")
 

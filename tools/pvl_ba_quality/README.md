@@ -10,6 +10,8 @@ Use explicit field tags instead of bare positional numbers:
 problem-i<images>-p<points>-o<observations>-g<gcps>
 ```
 
+`g` counts only GCPs with at least one measurement in the filtered BA image set.
+
 For default initialization-quality variants, append the target initial RMSE:
 
 ```text
@@ -27,6 +29,12 @@ Observation-noise variants use `obs-rmse` instead:
 problem-i507-p40315-o139534-g3-obs-rmse010p00px
 ```
 
+Joint camera-pose and 3D point stress variants use `joint-rmse`:
+
+```text
+problem-i507-p40315-o139534-g3-joint-rmse200p00px
+```
+
 The tags make the name self-describing:
 
 - `i`: valid network images.
@@ -39,10 +47,26 @@ The tags make the name self-describing:
 Default mode:
 
 ```text
+--mode auto
+```
+
+This mode uses `init-pose-triangulate` for main levels and `init-pose-point` for stress levels.
+
+Main initialization-quality mode:
+
+```text
 --mode init-pose-triangulate
 ```
 
-This mode perturbs camera poses, keeps `Feature.txt` fixed, and re-triangulates `XYZ.txt` from the perturbed cameras and original image observations. It is the recommended benchmark mode because the 3D geometry, camera initialization, and visualized structure all reflect the requested initial quality.
+This mode perturbs camera poses, keeps `Feature.txt` fixed, and re-triangulates `XYZ.txt` from the perturbed cameras and original image observations.
+
+Stress initialization-quality mode:
+
+```text
+--mode init-pose-point
+```
+
+This mode perturbs camera poses and 3D tie-point coordinates directly, keeps `Feature.txt` fixed, and does not re-triangulate points. It is the default stress-test mode because it scales to very large blocks while still testing BA convergence from a poor joint initialization.
 
 Supplementary mode:
 
@@ -74,7 +98,7 @@ The `stress` preset generates:
 200 px, 500 px
 ```
 
-Use stress levels as a robustness supplement, not as the primary leaderboard. Each `noise_metadata.json` stores both pixel RMSE and normalized RMSE values.
+Use stress levels as a robustness supplement, not as the primary leaderboard. By default, stress levels are generated with `init-pose-point` and use the `joint-rmse` filename tag. Each `noise_metadata.json` stores both pixel RMSE and normalized RMSE values.
 
 ## Usage
 
@@ -84,9 +108,9 @@ python .\generate_noisy_pvl_ba.py `
   --output-root ..\..\outputs\pvl_ba_quality
 ```
 
-This uses `--mode init-pose-triangulate` and the `main` RMSE preset.
+This uses `--mode auto` and the `main` RMSE preset.
 
-The default pose-triangulation mode is streaming. Cameras and pose-noise vectors stay in memory, while `XYZ.txt` and `Feature.txt` are read point-by-point. The generated `Cam-*.txt` and `XYZ.txt` are rewritten, while static files such as `Feature.txt`, `cal.txt`, and GCP sidecars are hard-linked by default when the filesystem supports it.
+Both initialization modes are streaming. Cameras and pose-noise vectors stay in memory, while `XYZ.txt` and `Feature.txt` are read point-by-point. `init-pose-triangulate` re-triangulates and rewrites `XYZ.txt`; `init-pose-point` directly perturbs and rewrites `XYZ.txt`. Static files such as `Feature.txt`, `cal.txt`, and GCP sidecars are hard-linked by default when the filesystem supports it.
 
 Use custom levels:
 
@@ -106,6 +130,8 @@ python .\generate_noisy_pvl_ba.py `
   --preset stress
 ```
 
+This uses `init-pose-point` automatically. Pass `--mode init-pose-triangulate` only when you explicitly need the older re-triangulated stress behavior.
+
 Generate observation-noise variants:
 
 ```powershell
@@ -118,22 +144,22 @@ python .\generate_noisy_pvl_ba.py `
 
 Each output dataset includes `noise_metadata.json`.
 
-For `init-pose-triangulate`, `noise_metadata.json` also records camera-center error, camera-rotation error, and tie-point coordinate error summaries relative to the input PVL-BA dataset. These metrics help explain high-RMSE stress levels: a few degrees of rotation error or a small center shift in world coordinates can become a large image-space residual after projection and re-triangulation.
+For initialization modes, `noise_metadata.json` also records camera-center error, camera-rotation error, and tie-point coordinate error summaries relative to the input PVL-BA dataset. These metrics help explain high-RMSE stress levels: a visually modest 3D initialization perturbation can still produce a large image-space residual after projection.
 
 ## Scale Notes
 
-`init-pose-triangulate` supports two scale solvers:
+Initialization modes support two scale solvers:
 
 ```text
 --scale-solver sampled
 --scale-solver exact
 ```
 
-`sampled` is the default and is recommended for large releases. It estimates the pose-noise scale from a deterministic point sample, then checks the scale on the full dataset. If the full RMSE is outside `--full-refine-tolerance` (default `0.02`), it runs up to `--full-refine-iterations` full-dataset bisection passes (default `12`) before writing the final dataset, stopping early once the tolerance is met. Existing variants are considered complete only when `noise_metadata.json` reports an `actual_rmse_px` within this tolerance.
+`sampled` is the default and is recommended for large releases. It estimates the noise scale from a deterministic point sample, then checks the scale on the full dataset. If the full RMSE is outside `--full-refine-tolerance` (default `0.02`), it runs up to `--full-refine-iterations` full-dataset bisection passes (default `12`) before writing the final dataset, stopping early once the tolerance is met. Existing variants are considered complete only when `noise_metadata.json` reports an `actual_rmse_px` within this tolerance and the stored mode matches the requested mode.
 
 `exact` runs full-dataset bisection and gives the closest target RMSE, but it is much slower on large blocks.
 
-Stress levels can expose non-monotonic pose-scale behavior: a small number of nearly degenerate re-triangulated tracks may create sharp RMSE spikes, so plain bisection can miss a target such as `500 px`. In that case, first diagnose the scale/RMSE curve, then pin a known-good scale:
+Re-triangulated stress levels can expose non-monotonic pose-scale behavior: a small number of nearly degenerate tracks may create sharp RMSE spikes, so plain bisection can miss a target such as `500 px`. If you explicitly use `--mode init-pose-triangulate` for stress, first diagnose the scale/RMSE curve, then pin a known-good scale:
 
 ```powershell
 python .\generate_noisy_pvl_ba.py `

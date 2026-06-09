@@ -18,6 +18,7 @@ from pathlib import Path
 MAIN_RMSE = (2, 5, 10, 20, 50, 100)
 STRESS_RMSE = (200, 500)
 DEFAULT_VIEWER_TARGET_FRUSTUMS = 5000
+QUALITY_MODES = ("init-pose-triangulate", "init-pose-point", "observation-noise")
 
 
 @dataclass(frozen=True)
@@ -42,17 +43,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--formats", nargs="+", choices=("pvl-ba", "colmap", "bal"), default=("pvl-ba",))
     parser.add_argument("--quality", action="store_true", help="Generate PVL-BA quality variants")
     parser.add_argument("--quality-preset", choices=("main", "stress", "all"), default="all")
-    parser.add_argument("--quality-mode", choices=("init-pose-triangulate", "observation-noise"), default="init-pose-triangulate")
+    parser.add_argument("--quality-mode", choices=QUALITY_MODES, default="init-pose-triangulate")
+    parser.add_argument(
+        "--quality-stress-mode",
+        choices=QUALITY_MODES,
+        default="init-pose-point",
+        help="Generation mode used for stress RMSE levels when --quality-preset is stress or all",
+    )
     parser.add_argument("--quality-seed", type=int, default=20260603)
     parser.add_argument("--rotation-weight-deg", type=float, default=1.0)
     parser.add_argument("--translation-weight", type=float, default=1.0)
+    parser.add_argument("--point-weight", type=float, default=1.0)
     parser.add_argument("--max-scale", type=float, default=1.0)
     parser.add_argument("--bisection-iterations", type=int, default=24)
     parser.add_argument("--scale-solver", choices=("sampled", "exact"), default="sampled")
     parser.add_argument("--sample-max-points", type=int, default=50000)
     parser.add_argument("--full-refine-iterations", type=int, default=12)
     parser.add_argument("--full-refine-tolerance", type=float, default=0.02)
-    parser.add_argument("--full-search-steps", type=int, default=12)
+    parser.add_argument("--full-search-steps", type=int, default=0)
     parser.add_argument("--error-sample-max-points", type=int, default=100000)
     parser.add_argument("--static-file-policy", choices=("hardlink", "copy"), default="hardlink")
     parser.add_argument("--include-gcp-observations", action="store_true")
@@ -70,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         help="Target maximum camera frustums per viewer dataset when --viewer-camera-stride auto is used",
     )
     parser.add_argument("--viewer-max-points", type=int, default=100000, help="Maximum sparse points embedded in viewers")
+    parser.add_argument(
+        "--viewer-metric-max-points",
+        type=int,
+        default=100000,
+        help="Maximum tie points sampled for linked-viewer metric estimates",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Limit number of manifest rows, useful for smoke tests")
     parser.add_argument("--only", nargs="*", default=(), help="Dataset names to process")
     parser.add_argument("--skip-existing", action="store_true", help="Skip outputs that already look complete")
@@ -127,12 +141,19 @@ def run(command: list[str], dry_run: bool) -> None:
         subprocess.run(command, check=True)
 
 
-def quality_targets(preset: str) -> list[str]:
-    if preset == "main":
-        return [str(value) for value in MAIN_RMSE]
-    if preset == "stress":
-        return [str(value) for value in STRESS_RMSE]
-    return [str(value) for value in (*MAIN_RMSE, *STRESS_RMSE)]
+def quality_jobs(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
+    jobs: list[tuple[str, list[str]]] = []
+    if args.quality_preset in ("main", "all"):
+        jobs.append((args.quality_mode, [str(value) for value in MAIN_RMSE]))
+    if args.quality_preset in ("stress", "all"):
+        jobs.append((args.quality_stress_mode, [str(value) for value in STRESS_RMSE]))
+    merged: list[tuple[str, list[str]]] = []
+    for mode, targets in jobs:
+        if merged and merged[-1][0] == mode:
+            merged[-1][1].extend(targets)
+        else:
+            merged.append((mode, list(targets)))
+    return merged
 
 
 def pvl_ba_complete(path: Path) -> bool:
@@ -160,7 +181,7 @@ def target_relative_error(actual_rmse: float, target_rmse: float) -> float:
     return abs(actual_rmse - target_rmse) / target_rmse if target_rmse > 0.0 else 0.0
 
 
-def quality_variant_complete(path: Path, target: str, tolerance: float) -> bool:
+def quality_variant_complete(path: Path, target: str, tolerance: float, mode: str) -> bool:
     metadata_path = path / "noise_metadata.json"
     if not (
         (path / "cal.txt").exists()
@@ -172,17 +193,29 @@ def quality_variant_complete(path: Path, target: str, tolerance: float) -> bool:
         return False
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("mode") != mode:
+            return False
         actual_rmse = float(metadata["actual_rmse_px"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return False
     return target_relative_error(actual_rmse, float(target)) <= tolerance
 
 
+def quality_tag(mode: str) -> str:
+    if mode == "init-pose-triangulate":
+        return "init-rmse"
+    if mode == "init-pose-point":
+        return "joint-rmse"
+    if mode == "observation-noise":
+        return "obs-rmse"
+    raise ValueError(f"Unsupported quality mode: {mode}")
+
+
 def quality_complete(path: Path, mode: str, targets: list[str], tolerance: float) -> bool:
-    tag = "init-rmse" if mode == "init-pose-triangulate" else "obs-rmse"
+    tag = quality_tag(mode)
     for target in targets:
         pattern = f"*-{tag}{quality_rmse_tag(target)}px"
-        if not any(quality_variant_complete(candidate, target, tolerance) for candidate in path.glob(pattern)):
+        if not any(quality_variant_complete(candidate, target, tolerance, mode) for candidate in path.glob(pattern)):
             return False
     return True
 
@@ -199,8 +232,49 @@ def viewer_camera_stride(args: argparse.Namespace, row: ManifestRow) -> int:
     return args.viewer_camera_stride
 
 
+def gcp_sidecar_stats(output_dir: Path) -> tuple[int, int, int] | None:
+    checkpoints_by_id = {}
+    gcp_candidates = [output_dir / "gcp.txt", *sorted(output_dir.glob("*.gcp.txt"))]
+    for gcp_path in gcp_candidates:
+        if not gcp_path.exists():
+            continue
+        for line in gcp_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            tokens = line.split()
+            checkpoints_by_id[int(tokens[0])] = int(tokens[7])
+        break
+
+    observation_candidates = [output_dir / "gcp_observations.txt", *sorted(output_dir.glob("*.gcp_observations.txt"))]
+    for observations_path in observation_candidates:
+        if not observations_path.exists():
+            continue
+        gcp_count = 0
+        checkpoint_count = 0
+        observation_count = 0
+        for line in observations_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            tokens = line.split()
+            gcp_id = int(tokens[0])
+            track_len = int(tokens[1])
+            if track_len > 0:
+                gcp_count += 1
+                checkpoint_count += checkpoints_by_id.get(gcp_id, 0)
+            observation_count += track_len
+        return gcp_count, checkpoint_count, observation_count
+
+    if checkpoints_by_id:
+        return len(checkpoints_by_id), sum(checkpoints_by_id.values()), 0
+    return None
+
+
 def write_dataset_metadata(output_dir: Path, row: ManifestRow) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    gcp_stats = gcp_sidecar_stats(output_dir)
+    gcp_count, checkpoint_count, gcp_observation_count = gcp_stats if gcp_stats is not None else (
+        (0, 0, 0) if row.gcp_observations == 0 else (row.gcps, row.checkpoints, row.gcp_observations)
+    )
     metadata = {
         "dataset_name": row.dataset_name,
         "source_xml": str(row.source_xml),
@@ -209,9 +283,9 @@ def write_dataset_metadata(output_dir: Path, row: ManifestRow) -> None:
         "images": row.valid_images,
         "points": row.points,
         "observations": row.observations,
-        "gcps": row.gcps,
-        "checkpoints": row.checkpoints,
-        "gcp_observations": row.gcp_observations,
+        "gcps": gcp_count,
+        "checkpoints": checkpoint_count,
+        "gcp_observations": gcp_observation_count,
         "photogroups": row.photogroups,
     }
     (output_dir / "dataset_metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -224,6 +298,7 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
     bal_path = output_root / "bal" / row.dataset_name / "original.bal"
     quality_root = output_root / "pvl-ba" / row.dataset_name / "quality"
     viewer_path = output_root / "viewers" / f"{row.dataset_name}.html"
+    quality_changed = False
 
     if not row.source_xml.exists():
         raise FileNotFoundError(row.source_xml)
@@ -289,10 +364,10 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
     if args.quality:
         if "pvl-ba" not in args.formats and not pvl_dir.exists():
             raise FileNotFoundError(f"PVL-BA original not found for quality generation: {pvl_dir}")
-        targets = quality_targets(args.quality_preset)
-        if args.skip_existing and quality_complete(quality_root, args.quality_mode, targets, args.full_refine_tolerance):
-            print(f"skip existing quality variants {quality_root}", flush=True)
-        else:
+        for mode, targets in quality_jobs(args):
+            if args.skip_existing and quality_complete(quality_root, mode, targets, args.full_refine_tolerance):
+                print(f"skip existing {mode} quality variants {quality_root}", flush=True)
+                continue
             run(
                 [
                     args.python,
@@ -304,13 +379,15 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
                     "--seed",
                     str(args.quality_seed),
                     "--mode",
-                    args.quality_mode,
+                    mode,
                     "--prefix",
                     row.dataset_name,
                     "--rotation-weight-deg",
                     str(args.rotation_weight_deg),
                     "--translation-weight",
                     str(args.translation_weight),
+                    "--point-weight",
+                    str(args.point_weight),
                     "--max-scale",
                     str(args.max_scale),
                     "--bisection-iterations",
@@ -335,12 +412,13 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
                 + (["--include-gcp-observations"] if args.include_gcp_observations else []),
                 args.dry_run,
             )
+            quality_changed = True
 
     if args.viewers:
         viewer_input = quality_root if args.quality else pvl_dir.parent
         camera_stride = viewer_camera_stride(args, row)
         if args.quality:
-            if args.skip_existing and viewer_path.exists():
+            if args.skip_existing and viewer_path.exists() and not quality_changed:
                 print(f"skip existing viewer {viewer_path}", flush=True)
             else:
                 run(
@@ -357,6 +435,8 @@ def process_row(args: argparse.Namespace, row: ManifestRow, root: Path) -> dict:
                         str(camera_stride),
                         "--max-points",
                         str(args.viewer_max_points),
+                        "--metric-max-points",
+                        str(args.viewer_metric_max_points),
                     ],
                     args.dry_run,
                 )
@@ -426,7 +506,8 @@ def write_dashboard(path: Path, entries: list[dict]) -> None:
 def main() -> None:
     args = parse_args()
     root = repo_root()
-    rows = read_manifest((root / args.manifest).resolve() if not args.manifest.is_absolute() else args.manifest)
+    manifest_path = (root / args.manifest).resolve() if not args.manifest.is_absolute() else args.manifest
+    rows = read_manifest(manifest_path)
     if args.only:
         allowed = set(args.only)
         rows = [row for row in rows if row.dataset_name in allowed]
@@ -441,6 +522,22 @@ def main() -> None:
         print(f"write dashboard {dashboard_path}", flush=True)
         if not args.dry_run and entries:
             write_dashboard(dashboard_path, entries)
+        viewer_index_path = args.output_root.resolve() / "viewers" / "index.html"
+        print(f"write viewer index {viewer_index_path}", flush=True)
+        if entries:
+            run(
+                [
+                    args.python,
+                    str(root / "tools/ba_visualizer/generate_viewer_index.py"),
+                    "--viewer-dir",
+                    str(viewer_index_path.parent),
+                    "--output",
+                    str(viewer_index_path),
+                    "--manifest",
+                    str(manifest_path),
+                ],
+                args.dry_run,
+            )
 
 
 if __name__ == "__main__":

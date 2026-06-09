@@ -12,10 +12,11 @@ param(
 
     [int]$Seed = 20260603,
     [string]$Prefix = "problem",
-    [ValidateSet("init-pose-triangulate", "observation-noise")]
-    [string]$Mode = "init-pose-triangulate",
+    [ValidateSet("auto", "init-pose-triangulate", "init-pose-point", "observation-noise")]
+    [string]$Mode = "auto",
     [double]$RotationWeightDeg = 1.0,
     [double]$TranslationWeight = 1.0,
+    [double]$PointWeight = 1.0,
     [double]$MaxScale = 1.0,
     [int]$BisectionIterations = 24,
     [ValidateSet("sampled", "exact")]
@@ -41,6 +42,7 @@ $argsList = @(
     "--mode", $Mode,
     "--rotation-weight-deg", "$RotationWeightDeg",
     "--translation-weight", "$TranslationWeight",
+    "--point-weight", "$PointWeight",
     "--max-scale", "$MaxScale",
     "--bisection-iterations", "$BisectionIterations",
     "--scale-solver", $ScaleSolver,

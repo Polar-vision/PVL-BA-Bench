@@ -164,28 +164,30 @@ def read_points(path: Path, max_points: int) -> list[Point3D]:
 def read_gcps(input_dir: Path) -> list[Gcp]:
     gcp_path = input_dir / "gcp.txt"
     obs_path = input_dir / "gcp_observations.txt"
-    if not gcp_path.exists():
+    if not gcp_path.exists() or not obs_path.exists():
         return []
     observation_counts = {}
-    if obs_path.exists():
-        for line in obs_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line.startswith("#"):
-                continue
-            tokens = line.split()
-            observation_counts[int(tokens[0])] = int(tokens[1])
+    for line in obs_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        tokens = line.split()
+        observation_counts[int(tokens[0])] = int(tokens[1])
     gcps = []
     for line in gcp_path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         tokens = line.split()
         gcp_id = int(tokens[0])
+        observation_count = observation_counts.get(gcp_id, 0)
+        if observation_count <= 0:
+            continue
         gcps.append(
             Gcp(
                 gcp_id=gcp_id,
                 name=tokens[1],
                 xyz=tuple(map(float, tokens[2:5])),
                 is_check_point=tokens[7] == "1",
-                observation_count=observation_counts.get(gcp_id, 0),
+                observation_count=observation_count,
             )
         )
     return gcps
@@ -649,7 +651,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     const gcpList = document.getElementById('gcps');
     if (data.gcps.length === 0) {
-      gcpList.textContent = 'No GCP sidecar files found.';
+      gcpList.textContent = 'No observed GCPs found.';
       gcpList.className = 'empty';
     } else {
       for (const gcp of data.gcps) {

@@ -15,6 +15,7 @@ from pvl_ba_utils.blocksexchange import (  # noqa: E402
     SpatialReference,
     control_point_to_gcp,
     has_complete_pose,
+    observed_ground_control_points,
     remove_from_parent,
     write_gcp_files,
 )
@@ -426,15 +427,19 @@ def main() -> None:
     finally:
         observations_tmp.unlink(missing_ok=True)
         points_tmp.unlink(missing_ok=True)
-    if gcps:
-        write_gcp_files(args.output.with_suffix(".gcp.txt"), args.output.with_suffix(".gcp_observations.txt"), gcps)
-    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
+    observed_gcps = observed_ground_control_points(gcps)
+    if observed_gcps:
+        write_gcp_files(args.output.with_suffix(".gcp.txt"), args.output.with_suffix(".gcp_observations.txt"), observed_gcps)
+    else:
+        args.output.with_suffix(".gcp.txt").unlink(missing_ok=True)
+        args.output.with_suffix(".gcp_observations.txt").unlink(missing_ok=True)
+    gcp_observations = sum(len(gcp.observations) for gcp in observed_gcps)
     print(f"Wrote BAL file to {args.output.resolve()}")
     print(f"  mode: {args.mode}")
     print(f"  cameras: {len(cameras)}")
     print(f"  points: {point_count}")
     print(f"  observations: {observation_count}")
-    print(f"  gcps: {len(gcps)}")
+    print(f"  gcps: {len(observed_gcps)}")
     print(f"  gcp observations: {gcp_observations}")
 
 

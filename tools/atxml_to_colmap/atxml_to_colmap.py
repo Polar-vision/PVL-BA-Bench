@@ -19,6 +19,7 @@ from pvl_ba_utils.blocksexchange import (  # noqa: E402
     SpatialReference,
     control_point_to_gcp,
     has_complete_pose,
+    observed_ground_control_points,
     remove_from_parent,
     write_gcp_files,
 )
@@ -540,16 +541,20 @@ def main() -> None:
         points_tmp.unlink(missing_ok=True)
         if temp_root.exists():
             shutil.rmtree(temp_root)
-    if gcps:
-        write_gcp_files(output_dir / "gcp.txt", output_dir / "gcp_observations.txt", gcps)
+    observed_gcps = observed_ground_control_points(gcps)
+    if observed_gcps:
+        write_gcp_files(output_dir / "gcp.txt", output_dir / "gcp_observations.txt", observed_gcps)
+    else:
+        (output_dir / "gcp.txt").unlink(missing_ok=True)
+        (output_dir / "gcp_observations.txt").unlink(missing_ok=True)
 
-    gcp_observations = sum(len(gcp.observations) for gcp in gcps)
+    gcp_observations = sum(len(gcp.observations) for gcp in observed_gcps)
     print(f"Wrote COLMAP text model to {output_dir}")
     print(f"  cameras: {len(cameras)}")
     print(f"  images: {len(images)}")
     print(f"  points3D: {point_count}")
     print(f"  observations: {measurement_count}")
-    print(f"  gcps: {len(gcps)}")
+    print(f"  gcps: {len(observed_gcps)}")
     print(f"  gcp observations: {gcp_observations}")
     if args.camera_model == "OPENCV":
         print("  note: XML K3 was dropped; use --camera-model FULL_OPENCV to keep it.")

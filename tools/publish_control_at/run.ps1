@@ -11,14 +11,19 @@ param(
     [ValidateSet("main", "stress", "all")]
     [string]$QualityPreset = "all",
 
-    [ValidateSet("init-pose-triangulate", "observation-noise")]
+    [ValidateSet("init-pose-triangulate", "init-pose-point", "observation-noise")]
     [string]$QualityMode = "init-pose-triangulate",
+
+    [ValidateSet("init-pose-triangulate", "init-pose-point", "observation-noise")]
+    [string]$QualityStressMode = "init-pose-point",
 
     [int]$QualitySeed = 20260603,
 
     [double]$RotationWeightDeg = 1.0,
 
     [double]$TranslationWeight = 1.0,
+
+    [double]$PointWeight = 1.0,
 
     [double]$MaxScale = 1.0,
 
@@ -33,7 +38,7 @@ param(
 
     [double]$FullRefineTolerance = 0.02,
 
-    [int]$FullSearchSteps = 12,
+    [int]$FullSearchSteps = 0,
 
     [int]$ErrorSampleMaxPoints = 100000,
 
@@ -49,6 +54,8 @@ param(
     [int]$ViewerTargetFrustums = 5000,
 
     [int]$ViewerMaxPoints = 100000,
+
+    [int]$ViewerMetricMaxPoints = 100000,
 
     [switch]$Dashboard,
 
@@ -74,9 +81,11 @@ if ($Quality) {
         "--quality",
         "--quality-preset", $QualityPreset,
         "--quality-mode", $QualityMode,
+        "--quality-stress-mode", $QualityStressMode,
         "--quality-seed", [string]$QualitySeed,
         "--rotation-weight-deg", [string]$RotationWeightDeg,
         "--translation-weight", [string]$TranslationWeight,
+        "--point-weight", [string]$PointWeight,
         "--max-scale", [string]$MaxScale,
         "--bisection-iterations", [string]$BisectionIterations,
         "--scale-solver", $ScaleSolver,
@@ -96,7 +105,8 @@ if ($Viewers) {
         "--viewers",
         "--viewer-camera-stride", $ViewerCameraStride,
         "--viewer-target-frustums", [string]$ViewerTargetFrustums,
-        "--viewer-max-points", [string]$ViewerMaxPoints
+        "--viewer-max-points", [string]$ViewerMaxPoints,
+        "--viewer-metric-max-points", [string]$ViewerMetricMaxPoints
     )
 }
 if ($Dashboard) {

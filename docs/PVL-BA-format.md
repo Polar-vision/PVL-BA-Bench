@@ -115,6 +115,8 @@ where `X Y Z` are expressed in the same world coordinate system as `XYZ.txt` and
 GCP_ID N image_idx_1 u_1 v_1 image_idx_2 u_2 v_2 ...
 ```
 
+Converters write only GCPs with at least one measurement in the filtered BA image set. `GCP_ID` is compact and zero-based after that filtering.
+
 For PVL-BA, GCP image coordinates are undistorted pixel coordinates, using the same convention as `Feature.txt`.
 
 ## Invalid Photos

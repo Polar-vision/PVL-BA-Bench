@@ -16,6 +16,8 @@ Dataset instances use explicit count tags:
 problem-i<images>-p<points>-o<observations>-g<gcps>
 ```
 
+`g` counts only GCPs with at least one measurement in the filtered BA image set. When a dataset name includes `-c<checkpoints>`, `c` uses the same observed-GCP filtering.
+
 For controlled-quality variants, append the target initial RMSE:
 
 ```text
@@ -157,7 +159,17 @@ powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run_quality.ps1 `
 
 The linked viewer preserves the current 3D camera view while switching quality levels and can overlay the original reference geometry. It reports per-level reprojection RMSE, residual percentiles, GCP RMSE, and negative-depth counts.
 
-For pose-triangulated quality variants, the viewer also reports camera-center, camera-rotation, and tie-point world-coordinate error summaries from `noise_metadata.json`. These values are useful for interpreting stress tests: a visually modest frustum displacement can still produce a very large image-space RMSE when small angular errors are projected through long focal lengths and re-triangulated tie points.
+For initialization-quality variants, the viewer also reports camera-center, camera-rotation, and tie-point world-coordinate error summaries from `noise_metadata.json`. These values are useful for interpreting stress tests: a visually modest frustum or 3D point displacement can still produce a very large image-space RMSE when projected through long focal lengths.
+
+For a release directory that already contains multiple viewer HTML files, generate a local index page for switching between datasets:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\ba_visualizer\run_index.ps1 `
+  -ViewerDir outputs\control_at_20_release\viewers `
+  -Manifest manifests\control_at_20.csv
+```
+
+This writes `viewers\index.html` next to the dataset viewers.
 
 ### PVL-BA Quality Variants
 
@@ -169,7 +181,7 @@ powershell -ExecutionPolicy Bypass -File tools\pvl_ba_quality\run.ps1 `
   -OutputRoot path\to\QUALITY_VARIANTS
 ```
 
-The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default mode perturbs camera poses and re-triangulates tie points while keeping `Feature.txt` fixed. This mode streams `XYZ.txt` and `Feature.txt` point-by-point and uses sampled scale solving by default for large blocks. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
+The default main preset generates `2, 5, 10, 20, 50, 100 px` quality variants; use `-Preset stress` for `200, 500 px`. The default `auto` mode uses pose perturbation plus re-triangulated tie points for main levels, and joint camera-pose plus 3D point initialization perturbation for stress levels. Both modes stream `XYZ.txt` and `Feature.txt` point-by-point and use sampled scale solving by default for large blocks. Use `-Mode observation-noise` only for supplementary image-measurement noise experiments. See [tools/pvl_ba_quality](tools/pvl_ba_quality) for details.
 
 ### Controlled-AT Release Manifest
 
@@ -179,7 +191,7 @@ The controlled aerotriangulation blocks with GCPs are listed in:
 manifests/control_at_20.csv
 ```
 
-This manifest contains 20 unique BA problems after removing duplicate Shiyan first-batch exports. Use [tools/publish_control_at](tools/publish_control_at) to batch-publish PVL-BA, COLMAP, BAL, quality variants, linked viewers, and a dashboard.
+This manifest contains 20 unique BA problems after removing duplicate Shiyan first-batch exports. Use [tools/publish_control_at](tools/publish_control_at) to batch-publish PVL-BA, COLMAP, BAL, quality variants, linked viewers, and dashboard/index pages.
 
 ## Input Format
 

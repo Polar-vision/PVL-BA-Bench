@@ -6,7 +6,7 @@ Batch-publish the 20 unique controlled aerotriangulation blocks listed in:
 manifests/control_at_20.csv
 ```
 
-The manifest is deduplicated by BA problem statistics. The three Shiyan first-batch XML exports have identical image, tie-point, observation, GCP, checkpoint, and GCP-observation counts; only one is listed for release.
+The manifest is deduplicated by BA problem statistics. GCP and checkpoint counts use only points with at least one measurement in the filtered BA image set. The three Shiyan first-batch XML exports have identical image, tie-point, observation, observed-GCP, observed-checkpoint, and GCP-observation counts; only one is listed for release.
 
 ## Dry Run
 
@@ -53,28 +53,32 @@ powershell -ExecutionPolicy Bypass -File tools\publish_control_at\run.ps1 `
   -ViewerCameraStride 10
 ```
 
+Linked viewers sample up to 100,000 tie points per quality level for residual percentile metrics by default (`--viewer-metric-max-points`). Quality-level headline RMSE uses `noise_metadata.json` when available.
+
 The release tree uses:
 
 ```text
 pvl-ba/<dataset>/original
 pvl-ba/<dataset>/quality/<dataset>-init-rmse002p00px
+pvl-ba/<dataset>/quality/<dataset>-joint-rmse200p00px
 colmap/<dataset>/original
 bal/<dataset>/original.bal
 viewers/<dataset>.html
+viewers/index.html
 dashboard.html
 ```
 
-Quality variants are generated from PVL-BA using the default `init-pose-triangulate` mode:
+Quality variants are generated from PVL-BA with separate main and stress modes:
 
 ```text
 original
-2, 5, 10, 20, 50, 100 px
-200, 500 px
+main:   2, 5, 10, 20, 50, 100 px via init-pose-triangulate
+stress: 200, 500 px via init-pose-point
 ```
 
-The linked viewer groups `2..100 px` as the main benchmark and `200, 500 px` as stress tests.
+The linked viewer groups `2..100 px` as the main benchmark and `200, 500 px` as stress tests. With `-Dashboard`, the publisher writes both the legacy root `dashboard.html` and `viewers/index.html`, which provides search, area filtering, dataset counts, and an embedded viewer frame.
 
-`-SkipExisting` makes the release resumable. It skips PVL-BA/COLMAP/BAL originals, quality variants, and viewers that already look complete. Quality variants are skipped only when their files exist and `noise_metadata.json` reports `actual_rmse_px` within `--full-refine-tolerance` of the requested target.
+`-SkipExisting` makes the release resumable. It skips PVL-BA/COLMAP/BAL originals, quality variants, and viewers that already look complete. Quality variants are skipped only when their files exist and `noise_metadata.json` reports both the requested mode and an `actual_rmse_px` within `--full-refine-tolerance` of the requested target.
 
 For large releases, `publish_control_at.py` forwards the streaming quality-generator options:
 
@@ -87,10 +91,10 @@ For large releases, `publish_control_at.py` forwards the streaming quality-gener
 --static-file-policy hardlink
 ```
 
-Use `--scale-solver exact` only for smaller blocks where tighter target matching is more important than wall time. Full refine stops early once the full-dataset RMSE is within tolerance. Stress levels may be non-monotonic because degenerate re-triangulated tracks can create sharp RMSE spikes; inspect those cases and rerun the affected target with `--pose-scale-override TARGET=SCALE` from `tools/pvl_ba_quality/generate_noisy_pvl_ba.py`. Keep `--rotation-weight-deg` and `--translation-weight` fixed across a release so `Pose scale` remains comparable between quality levels.
+Use `--scale-solver exact` only for smaller blocks where tighter target matching is more important than wall time. Full refine stops early once the full-dataset RMSE is within tolerance. Stress levels default to `init-pose-point`, which perturbs camera poses and 3D tie points directly without re-triangulation. Keep `--rotation-weight-deg`, `--translation-weight`, and `--point-weight` fixed across a release so the reported noise scale remains comparable between quality levels.
 
 ## Resource Notes
 
 The AT-to-PVL-BA, AT-to-COLMAP, and AT-to-BAL converters use streaming XML parsing and can process large BlocksExchange files without loading the complete XML tree into RAM.
 
-Quality generation is a different workload. The default `init-pose-triangulate` mode now streams `XYZ.txt` and `Feature.txt`, but it still repeatedly perturbs all cameras, re-triangulates tie points, and evaluates image observations to hit each target RMSE. For the 20-block control-AT manifest, the original PVL-BA/COLMAP/BAL text exports are expected to be on the order of 150 GB, while eight PVL-BA quality variants can add several hundred GB more. Run the full release on a large output disk and process very large blocks individually if wall time is limited.
+Quality generation is a different workload. The main `init-pose-triangulate` levels still perturb all cameras, re-triangulate tie points, and evaluate image observations to hit each target RMSE. The stress `init-pose-point` levels avoid re-triangulation and rewrite only the perturbed camera poses and 3D points while keeping observations fixed. For the 20-block control-AT manifest, the original PVL-BA/COLMAP/BAL text exports are expected to be on the order of 150 GB, while quality variants can add several hundred GB more. Run the full release on a large output disk and process very large blocks individually if wall time is limited.

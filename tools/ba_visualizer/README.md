@@ -78,11 +78,23 @@ It groups `2, 5, 10, 20, 50, 100 px` as the main benchmark and `200, 500 px` as 
 
 Use `--reference-dir` / `-ReferenceDir` when the original PVL-BA dataset is stored outside the quality-variant directory.
 
+## Viewer Index
+
+After generating multiple dataset viewers in one directory, create a switching page next to them:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_index.ps1 `
+  -ViewerDir ..\..\outputs\control_at_20_release\viewers `
+  -Manifest ..\..\manifests\control_at_20.csv
+```
+
+The index scans `*.html` viewers, skips its own `index.html`, and writes `index.html` by default. When a manifest is provided, the page uses manifest counts and ordering; otherwise it parses counts from viewer filenames such as `feice-road-problem-i103498-p1501333-o10073847-g40-c0.html`.
+
 ## Display
 
 - Sparse 3D points are rendered with their COLMAP RGB colors when available.
 - Camera centers and frustums are rendered from COLMAP `qvec/tvec`.
-- GCP coordinates are rendered in the same world frame as the BA problem.
+- Observed GCP coordinates are rendered in the same world frame as the BA problem.
 - The viewer maps ENU-style world coordinates to a Z-up scene for easier inspection.
 - For PVL-BA quality variants, the side panel displays current RMSE and target RMSE from `noise_metadata.json`.
 - The linked quality viewer also reports per-level RMSE, residual percentiles, GCP RMSE, negative-depth counts, and pose-triangulation error summaries when available.
