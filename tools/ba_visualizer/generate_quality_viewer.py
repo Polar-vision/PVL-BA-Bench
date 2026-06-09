@@ -307,6 +307,7 @@ def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path, metr
         "source": str(input_dir),
         "stats": stats,
         "bounds": payload["bounds"],
+        "viewBounds": payload.get("viewBounds", payload["bounds"]),
         "points": payload["points"],
         "cameras": payload["cameras"],
         "gcps": payload["gcps"],
@@ -345,7 +346,8 @@ def build_quality_payload(
     ]
     shared_bounds = global_bounds(datasets)
     reference_index = next((index for index, dataset in enumerate(datasets) if dataset["isReference"]), 0)
-    reference_diagonal = datasets[reference_index]["bounds"]["diagonal"]
+    reference_frame = datasets[reference_index].get("viewBounds", datasets[reference_index]["bounds"])
+    reference_diagonal = reference_frame["diagonal"]
     shared_diagonal = max(reference_diagonal, 1.0)
     shared_frustum_scale = max(shared_diagonal * 0.025, 1.0)
     for output_dataset, (_dataset, _payload, cameras) in zip(datasets, raw_items):
@@ -468,19 +470,36 @@ HTML_TEMPLATE = r"""<!doctype html>
     renderer.setClearColor(0x101215, 1);
 
     const scene = new THREE.Scene();
-    const diagonal = Math.max(payload.bounds.diagonal, 1);
-    const center = new THREE.Vector3(...payload.bounds.center);
-    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(diagonal * 20, 1000));
+    const sceneDiagonal = Math.max(payload.bounds.diagonal, 1);
+    let activeFrame = null;
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(sceneDiagonal * 20, 1000));
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    const grid = new THREE.GridHelper(diagonal * 1.25, 12, 0x3b4752, 0x252d35);
-    grid.position.copy(center);
+    const grid = new THREE.GridHelper(1, 12, 0x3b4752, 0x252d35);
     scene.add(grid);
 
-    const axes = new THREE.AxesHelper(diagonal * 0.12);
-    axes.position.copy(center);
+    const axes = new THREE.AxesHelper(1);
     scene.add(axes);
+
+    function frameForDataset(index) {
+      const frame = datasets[index]?.viewBounds || datasets[index]?.bounds || payload.bounds;
+      return {
+        center: new THREE.Vector3(...frame.center),
+        diagonal: Math.max(frame.diagonal, 1),
+      };
+    }
+
+    function updateFrame(index) {
+      activeFrame = frameForDataset(index);
+      grid.position.copy(activeFrame.center);
+      grid.scale.setScalar(activeFrame.diagonal * 1.25);
+      axes.position.copy(activeFrame.center);
+      axes.scale.setScalar(activeFrame.diagonal * 0.12);
+      camera.near = Math.max(activeFrame.diagonal / 100000, 0.001);
+      camera.far = Math.max(sceneDiagonal * 20, activeFrame.diagonal * 20, 1000);
+      camera.updateProjectionMatrix();
+    }
 
     function fmt(value, decimals=2) {
       if (value === null || value === undefined) return 'n/a';
@@ -617,6 +636,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       updateButtons();
       updateStats();
       updateGcps();
+      updateFrame(index);
       applyVisibility();
     }
 
@@ -702,6 +722,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     }
 
     function resetView(top=false) {
+      if (!activeFrame) updateFrame(activeIndex);
+      const center = activeFrame.center;
+      const diagonal = activeFrame.diagonal;
       controls.target.copy(center);
       if (top) {
         camera.position.set(center.x, center.y + diagonal * 1.35, center.z + 0.001);
@@ -709,7 +732,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         camera.position.set(center.x - diagonal * 0.65, center.y + diagonal * 0.45, center.z + diagonal * 0.75);
       }
       camera.near = Math.max(diagonal / 100000, 0.001);
-      camera.far = Math.max(diagonal * 20, 1000);
+      camera.far = Math.max(sceneDiagonal * 20, diagonal * 20, 1000);
       camera.updateProjectionMatrix();
       controls.update();
     }

@@ -193,9 +193,17 @@ manifests/control_at_20.csv
 
 This manifest contains 20 unique BA problems after removing duplicate Shiyan first-batch exports. Use [tools/publish_control_at](tools/publish_control_at) to batch-publish PVL-BA, COLMAP, BAL, quality variants, linked viewers, and dashboard/index pages.
 
+The ABS Cloud Earth blocks are listed in:
+
+```text
+manifests/abs_12.csv
+```
+
+This manifest contains 12 valid ABS BA problems. The manifest and generated metadata include `source_software_vendor` and `source_software` fields to keep the Cloud Earth provenance separate from Reconstruction Master exports.
+
 ## Input Format
 
-`AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software, including Daspatial Reconstruction Master outputs.
+`AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software, including Daspatial Reconstruction Master and Cloud Earth outputs.
 
 When GCPs are present, the conversion tools require `pyproj` for cross-SRS coordinate transforms:
 

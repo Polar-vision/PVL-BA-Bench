@@ -296,6 +296,46 @@ def bounds(points: list[tuple[float, float, float]]) -> tuple[tuple[float, float
     return tuple(mins), tuple(maxs)  # type: ignore[return-value]
 
 
+def diagonal_from_bounds(min_bound: tuple[float, float, float], max_bound: tuple[float, float, float]) -> float:
+    return math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
+
+
+def bounds_payload(points: list[tuple[float, float, float]]) -> dict:
+    min_bound, max_bound = bounds(points)
+    center = tuple((min_bound[index] + max_bound[index]) * 0.5 for index in range(3))
+    return {"min": min_bound, "max": max_bound, "center": center, "diagonal": diagonal_from_bounds(min_bound, max_bound)}
+
+
+def quantile(sorted_values: list[float], ratio: float) -> float:
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    position = max(0.0, min(1.0, ratio)) * (len(sorted_values) - 1)
+    low = math.floor(position)
+    high = math.ceil(position)
+    if low == high:
+        return sorted_values[low]
+    fraction = position - low
+    return sorted_values[low] * (1.0 - fraction) + sorted_values[high] * fraction
+
+
+def robust_bounds_payload(points: list[tuple[float, float, float]]) -> dict:
+    if len(points) < 100:
+        return bounds_payload(points)
+    axis_values = [[point[index] for point in points] for index in range(3)]
+    limits = []
+    for values in axis_values:
+        values.sort()
+        limits.append((quantile(values, 0.01), quantile(values, 0.99)))
+    filtered = [
+        point
+        for point in points
+        if all(limits[index][0] <= point[index] <= limits[index][1] for index in range(3))
+    ]
+    if len(filtered) < max(20, len(points) // 2):
+        return bounds_payload(points)
+    return bounds_payload(filtered)
+
+
 def frustum_segments(image: Image, camera: Camera, scale: float) -> list[tuple[float, float, float]]:
     rotation = qvec_to_rotation(image.qvec)
     center = camera_center(image)
@@ -370,18 +410,18 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
     all_xyz = [point.xyz for point in points] + centers + [gcp.xyz for gcp in gcps]
     min_bound, max_bound = bounds(all_xyz)
     diagonal = math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
-    frustum_scale = max(diagonal * 0.025, 1.0)
+    viewer_points = [world_to_viewer(point.xyz) for point in points]
+    viewer_centers = [world_to_viewer(center) for center in centers]
+    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
+    viewer_positions = viewer_points + viewer_centers + viewer_gcps
+    viewer_bounds = bounds_payload(viewer_positions)
+    view_bounds = robust_bounds_payload(viewer_positions)
+    frustum_scale = max(view_bounds["diagonal"] * 0.025, 1.0)
 
     sampled_images = images[:: max(1, camera_stride)]
     frustum_vertices = []
     for image in sampled_images:
         frustum_vertices.extend(frustum_segments(image, cameras[image.camera_id], frustum_scale))
-
-    viewer_points = [world_to_viewer(point.xyz) for point in points]
-    viewer_centers = [world_to_viewer(center) for center in centers]
-    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
-    viewer_min, viewer_max = bounds(viewer_points + viewer_centers + viewer_gcps)
-    viewer_center = tuple((viewer_min[index] + viewer_max[index]) * 0.5 for index in range(3))
 
     return {
         "format": "COLMAP",
@@ -393,7 +433,8 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
             "gcps": len(gcps),
             "maxPoints": max_points,
         },
-        "bounds": {"min": viewer_min, "max": viewer_max, "center": viewer_center, "diagonal": diagonal},
+        "bounds": viewer_bounds,
+        "viewBounds": view_bounds,
         "points": {
             "positions": viewer_points,
             "colors": [[channel / 255.0 for channel in point.rgb] for point in points],
@@ -426,16 +467,17 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
     all_xyz = [point.xyz for point in points] + centers + [gcp.xyz for gcp in gcps]
     min_bound, max_bound = bounds(all_xyz)
     diagonal = math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
-    frustum_scale = max(diagonal * 0.025, 1.0)
+    viewer_points = [world_to_viewer(point.xyz) for point in points]
+    viewer_centers = [world_to_viewer(center) for center in centers]
+    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
+    viewer_positions = viewer_points + viewer_centers + viewer_gcps
+    viewer_bounds = bounds_payload(viewer_positions)
+    view_bounds = robust_bounds_payload(viewer_positions)
+    frustum_scale = max(view_bounds["diagonal"] * 0.025, 1.0)
     sampled_cameras = cameras[:: max(1, camera_stride)]
     frustum_vertices = []
     for camera in sampled_cameras:
         frustum_vertices.extend(pvl_frustum_segments(camera, frustum_scale))
-    viewer_points = [world_to_viewer(point.xyz) for point in points]
-    viewer_centers = [world_to_viewer(center) for center in centers]
-    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
-    viewer_min, viewer_max = bounds(viewer_points + viewer_centers + viewer_gcps)
-    viewer_center = tuple((viewer_min[index] + viewer_max[index]) * 0.5 for index in range(3))
     observation_count, rmse = pvl_rmse(input_dir, cameras)
     noise_metadata = read_noise_metadata(input_dir)
     stats = {
@@ -455,7 +497,8 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
         "source": str(input_dir),
         "stats": stats,
         "noiseMetadata": noise_metadata,
-        "bounds": {"min": viewer_min, "max": viewer_max, "center": viewer_center, "diagonal": diagonal},
+        "bounds": viewer_bounds,
+        "viewBounds": view_bounds,
         "points": {
             "positions": viewer_points,
             "colors": [[channel / 255.0 for channel in point.rgb] for point in points],
@@ -576,12 +619,14 @@ HTML_TEMPLATE = r"""<!doctype html>
     renderer.setClearColor(0x101215, 1);
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(data.bounds.diagonal * 20, 1000));
+    const sceneDiagonal = Math.max(data.bounds.diagonal, 1);
+    const frameBounds = data.viewBounds || data.bounds;
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(sceneDiagonal * 20, 1000));
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    const center = new THREE.Vector3(...data.bounds.center);
-    const diagonal = Math.max(data.bounds.diagonal, 1);
+    const center = new THREE.Vector3(...frameBounds.center);
+    const diagonal = Math.max(frameBounds.diagonal, 1);
     function resetView(top=false) {
       controls.target.copy(center);
       if (top) {
@@ -590,7 +635,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         camera.position.set(center.x - diagonal * 0.65, center.y + diagonal * 0.45, center.z + diagonal * 0.75);
       }
       camera.near = Math.max(diagonal / 100000, 0.001);
-      camera.far = Math.max(diagonal * 20, 1000);
+      camera.far = Math.max(sceneDiagonal * 20, diagonal * 20, 1000);
       camera.updateProjectionMatrix();
       controls.update();
     }

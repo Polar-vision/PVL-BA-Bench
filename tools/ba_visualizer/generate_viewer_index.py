@@ -16,6 +16,7 @@ DATASET_RE = re.compile(
     r"^(?P<area>.+)-problem-i(?P<images>\d+)-p(?P<points>\d+)-o(?P<observations>\d+)-g(?P<gcps>\d+)(?:-c(?P<checkpoints>\d+))?$"
 )
 AREA_LABELS = {
+    "abs": "ABS",
     "changji": "Changji",
     "feice-road": "Feice Road",
     "shiyan": "Shiyan",
