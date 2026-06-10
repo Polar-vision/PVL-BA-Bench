@@ -336,6 +336,110 @@ def robust_bounds_payload(points: list[tuple[float, float, float]]) -> dict:
     return bounds_payload(filtered)
 
 
+def robust_points(points: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+    if len(points) < 100:
+        return points
+    axis_values = [[point[index] for point in points] for index in range(3)]
+    limits = []
+    for values in axis_values:
+        values.sort()
+        limits.append((quantile(values, 0.01), quantile(values, 0.99)))
+    filtered = [
+        point
+        for point in points
+        if all(limits[index][0] <= point[index] <= limits[index][1] for index in range(3))
+    ]
+    if len(filtered) < max(20, len(points) // 2):
+        return points
+    return filtered
+
+
+def covariance_matrix(points: list[tuple[float, float, float]]) -> tuple[tuple[float, float, float], list[list[float]]]:
+    count = len(points)
+    center = tuple(sum(point[index] for point in points) / count for index in range(3))
+    matrix = [[0.0 for _ in range(3)] for _ in range(3)]
+    for point in points:
+        delta = [point[index] - center[index] for index in range(3)]
+        for row in range(3):
+            for col in range(row, 3):
+                matrix[row][col] += delta[row] * delta[col]
+    for row in range(3):
+        for col in range(row, 3):
+            matrix[row][col] /= count
+            matrix[col][row] = matrix[row][col]
+    return center, matrix
+
+
+def symmetric_eigen_3x3(matrix: list[list[float]]) -> tuple[list[float], list[tuple[float, float, float]]]:
+    values = [row[:] for row in matrix]
+    vectors = [[1.0 if row == col else 0.0 for col in range(3)] for row in range(3)]
+    for _iteration in range(80):
+        pivot_row, pivot_col = max(((0, 1), (0, 2), (1, 2)), key=lambda item: abs(values[item[0]][item[1]]))
+        pivot_value = values[pivot_row][pivot_col]
+        if abs(pivot_value) < 1e-12:
+            break
+        row_value = values[pivot_row][pivot_row]
+        col_value = values[pivot_col][pivot_col]
+        tau = (col_value - row_value) / (2.0 * pivot_value)
+        tangent = (1.0 if tau >= 0.0 else -1.0) / (abs(tau) + math.sqrt(1.0 + tau * tau))
+        cosine = 1.0 / math.sqrt(1.0 + tangent * tangent)
+        sine = tangent * cosine
+        for index in range(3):
+            if index in (pivot_row, pivot_col):
+                continue
+            old_row = values[index][pivot_row]
+            old_col = values[index][pivot_col]
+            values[index][pivot_row] = values[pivot_row][index] = cosine * old_row - sine * old_col
+            values[index][pivot_col] = values[pivot_col][index] = sine * old_row + cosine * old_col
+        values[pivot_row][pivot_row] = (
+            cosine * cosine * row_value
+            - 2.0 * sine * cosine * pivot_value
+            + sine * sine * col_value
+        )
+        values[pivot_col][pivot_col] = (
+            sine * sine * row_value
+            + 2.0 * sine * cosine * pivot_value
+            + cosine * cosine * col_value
+        )
+        values[pivot_row][pivot_col] = values[pivot_col][pivot_row] = 0.0
+        for index in range(3):
+            old_row = vectors[index][pivot_row]
+            old_col = vectors[index][pivot_col]
+            vectors[index][pivot_row] = cosine * old_row - sine * old_col
+            vectors[index][pivot_col] = sine * old_row + cosine * old_col
+    order = sorted(range(3), key=lambda index: values[index][index])
+    eigenvalues = [values[index][index] for index in order]
+    eigenvectors = [tuple(vectors[row][index] for row in range(3)) for index in order]
+    return eigenvalues, eigenvectors
+
+
+def principal_grid_plane(points: list[tuple[float, float, float]]) -> dict:
+    max_plane_samples = 20_000
+    if len(points) > max_plane_samples:
+        stride = math.ceil(len(points) / max_plane_samples)
+        points = points[::stride]
+    filtered = robust_points(points)
+    if len(filtered) < 20:
+        return {}
+    center, covariance = covariance_matrix(filtered)
+    eigenvalues, eigenvectors = symmetric_eigen_3x3(covariance)
+    if eigenvalues[1] <= 1e-12:
+        return {}
+    normal = eigenvectors[0]
+    length = math.sqrt(sum(component * component for component in normal))
+    if length <= 1e-12:
+        return {}
+    normal = tuple(component / length for component in normal)
+    if normal[1] < 0.0:
+        normal = tuple(-component for component in normal)
+    return {
+        "center": center,
+        "normal": normal,
+        "planarity": eigenvalues[0] / eigenvalues[1],
+        "samples": len(filtered),
+    }
+
+
 def frustum_segments(
     image: Image,
     camera: Camera,
@@ -478,6 +582,7 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
     viewer_bounds = bounds_payload(viewer_positions)
     view_bounds = robust_bounds_payload(viewer_positions)
     orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
+    grid_plane = principal_grid_plane(viewer_points)
     compact_scale_controls = is_colmap_view(metadata, "COLMAP")
     frustum_factor = 0.06 if compact_scale_controls else 0.025
     frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
@@ -500,6 +605,7 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
         "bounds": viewer_bounds,
         "viewBounds": view_bounds,
         "orbitBounds": orbit_bounds,
+        "gridPlane": grid_plane,
         "view": {
             "verticalSign": vertical_sign,
             "frustumScaleWorld": frustum_scale,
@@ -547,6 +653,7 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
     viewer_bounds = bounds_payload(viewer_positions)
     view_bounds = robust_bounds_payload(viewer_positions)
     orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
+    grid_plane = principal_grid_plane(viewer_points)
     compact_scale_controls = is_colmap_view(dataset_metadata, "PVL-BA")
     frustum_factor = 0.06 if compact_scale_controls else 0.025
     frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
@@ -576,6 +683,7 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
         "bounds": viewer_bounds,
         "viewBounds": view_bounds,
         "orbitBounds": orbit_bounds,
+        "gridPlane": grid_plane,
         "view": {
             "verticalSign": vertical_sign,
             "frustumScaleWorld": frustum_scale,
@@ -753,8 +861,20 @@ HTML_TEMPLATE = r"""<!doctype html>
       controls.update();
     }
 
+    const gridUp = new THREE.Vector3(0, 1, 0);
+    function applyGridPlane(gridObject, plane, fallbackCenter) {
+      gridObject.position.copy(fallbackCenter);
+      gridObject.quaternion.identity();
+      if (!plane?.normal) return;
+      const normal = new THREE.Vector3(...plane.normal);
+      if (normal.lengthSq() < 1e-12) return;
+      normal.normalize();
+      if (plane.center) gridObject.position.set(...plane.center);
+      gridObject.quaternion.setFromUnitVectors(gridUp, normal);
+    }
+
     const grid = new THREE.GridHelper(frameDiagonal * 1.25, 12, 0x3b4752, 0x252d35);
-    grid.position.copy(frameCenter);
+    applyGridPlane(grid, data.gridPlane, frameCenter);
     scene.add(grid);
 
     const axes = new THREE.AxesHelper(frameDiagonal * 0.12);

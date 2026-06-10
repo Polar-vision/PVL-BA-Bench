@@ -309,6 +309,7 @@ def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path, metr
         "bounds": payload["bounds"],
         "viewBounds": payload.get("viewBounds", payload["bounds"]),
         "orbitBounds": payload.get("orbitBounds", payload.get("viewBounds", payload["bounds"])),
+        "gridPlane": payload.get("gridPlane", {}),
         "view": payload.get("view", {}),
         "points": payload["points"],
         "cameras": payload["cameras"],
@@ -523,6 +524,18 @@ HTML_TEMPLATE = r"""<!doctype html>
     controls.zoomSpeed = compactScaleControls ? 1.25 : 1.0;
     controls.rotateSpeed = compactScaleControls ? 0.9 : 1.0;
 
+    const gridUp = new THREE.Vector3(0, 1, 0);
+    function applyGridPlane(gridObject, plane, fallbackCenter) {
+      gridObject.position.copy(fallbackCenter);
+      gridObject.quaternion.identity();
+      if (!plane?.normal) return;
+      const normal = new THREE.Vector3(...plane.normal);
+      if (normal.lengthSq() < 1e-12) return;
+      normal.normalize();
+      if (plane.center) gridObject.position.set(...plane.center);
+      gridObject.quaternion.setFromUnitVectors(gridUp, normal);
+    }
+
     const grid = new THREE.GridHelper(1, 12, 0x3b4752, 0x252d35);
     scene.add(grid);
 
@@ -537,13 +550,14 @@ HTML_TEMPLATE = r"""<!doctype html>
         diagonal: Math.max(frame.diagonal, 1),
         orbitCenter: new THREE.Vector3(...orbit.center),
         orbitDiagonal: Math.max(orbit.diagonal, 1),
+        gridPlane: datasets[index]?.gridPlane || null,
       };
     }
 
     function updateFrame(index) {
       activeFrame = frameForDataset(index);
-      grid.position.copy(activeFrame.center);
       grid.scale.setScalar(activeFrame.diagonal * 1.25);
+      applyGridPlane(grid, activeFrame.gridPlane, activeFrame.center);
       axes.position.copy(activeFrame.center);
       axes.scale.setScalar(activeFrame.diagonal * 0.12);
       camera.near = Math.max(activeFrame.diagonal / 100000, 0.001);
