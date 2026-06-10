@@ -83,9 +83,9 @@ def camera_center(image: Image) -> tuple[float, float, float]:
     return (-rt_t[0], -rt_t[1], -rt_t[2])
 
 
-def world_to_viewer(point: tuple[float, float, float]) -> tuple[float, float, float]:
+def world_to_viewer(point: tuple[float, float, float], vertical_sign: float = 1.0) -> tuple[float, float, float]:
     x, y, z = point
-    return (x, z, -y)
+    return (x, vertical_sign * z, -y)
 
 
 def rotation_from_euler(ey: float, ex: float, ez: float) -> list[list[float]]:
@@ -336,7 +336,12 @@ def robust_bounds_payload(points: list[tuple[float, float, float]]) -> dict:
     return bounds_payload(filtered)
 
 
-def frustum_segments(image: Image, camera: Camera, scale: float) -> list[tuple[float, float, float]]:
+def frustum_segments(
+    image: Image,
+    camera: Camera,
+    scale: float,
+    vertical_sign: float = 1.0,
+) -> list[tuple[float, float, float]]:
     rotation = qvec_to_rotation(image.qvec)
     center = camera_center(image)
     fx = camera.params[0]
@@ -366,12 +371,16 @@ def frustum_segments(image: Image, camera: Camera, scale: float) -> list[tuple[f
     ]
     vertices = []
     for start, end in pairs:
-        vertices.append(world_to_viewer(start))
-        vertices.append(world_to_viewer(end))
+        vertices.append(world_to_viewer(start, vertical_sign))
+        vertices.append(world_to_viewer(end, vertical_sign))
     return vertices
 
 
-def pvl_frustum_segments(camera: PvlCamera, scale: float) -> list[tuple[float, float, float]]:
+def pvl_frustum_segments(
+    camera: PvlCamera,
+    scale: float,
+    vertical_sign: float = 1.0,
+) -> list[tuple[float, float, float]]:
     fx, fy, cx, cy = camera.intrinsics
     z = scale
     corners_camera = [
@@ -396,9 +405,59 @@ def pvl_frustum_segments(camera: PvlCamera, scale: float) -> list[tuple[float, f
     ]
     vertices = []
     for start, end in pairs:
-        vertices.append(world_to_viewer(start))
-        vertices.append(world_to_viewer(end))
+        vertices.append(world_to_viewer(start, vertical_sign))
+        vertices.append(world_to_viewer(end, vertical_sign))
     return vertices
+
+
+def read_dataset_metadata(input_dir: Path) -> dict:
+    path = input_dir / "dataset_metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def median_axis(points: list[tuple[float, float, float]], axis: int) -> float:
+    values = sorted(point[axis] for point in points)
+    return values[len(values) // 2]
+
+
+def choose_vertical_sign(
+    points: list[tuple[float, float, float]],
+    centers: list[tuple[float, float, float]],
+    metadata: dict,
+    dataset_format: str,
+) -> float:
+    source_format = str(metadata.get("source_format", ""))
+    is_colmap = dataset_format == "COLMAP" or source_format.startswith("COLMAP")
+    if is_colmap and points and centers and median_axis(points, 2) > median_axis(centers, 2):
+        return -1.0
+    return 1.0
+
+
+def is_colmap_view(metadata: dict, dataset_format: str) -> bool:
+    source_format = str(metadata.get("source_format", ""))
+    return dataset_format == "COLMAP" or source_format.startswith("COLMAP")
+
+
+def is_kitti_view(metadata: dict) -> bool:
+    source = str(metadata.get("source", "")).replace("\\", "/")
+    source_name = str(metadata.get("source_name", "")).replace("\\", "/")
+    return any(part == "KITTI" for value in (source, source_name) for part in value.split("/"))
+
+
+def frustum_scale_control(metadata: dict) -> dict:
+    if not is_kitti_view(metadata):
+        return {}
+    return {
+        "min": 0.01,
+        "max": 5.0,
+        "step": 0.005,
+        "default": 0.02,
+    }
 
 
 def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -> dict:
@@ -407,21 +466,26 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
     points = read_points(input_dir / "points3D.txt", max_points)
     gcps = read_gcps(input_dir)
     centers = [camera_center(image) for image in images]
+    metadata: dict = {}
+    vertical_sign = choose_vertical_sign([point.xyz for point in points], centers, metadata, "COLMAP")
     all_xyz = [point.xyz for point in points] + centers + [gcp.xyz for gcp in gcps]
     min_bound, max_bound = bounds(all_xyz)
     diagonal = math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
-    viewer_points = [world_to_viewer(point.xyz) for point in points]
-    viewer_centers = [world_to_viewer(center) for center in centers]
-    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
+    viewer_points = [world_to_viewer(point.xyz, vertical_sign) for point in points]
+    viewer_centers = [world_to_viewer(center, vertical_sign) for center in centers]
+    viewer_gcps = [world_to_viewer(gcp.xyz, vertical_sign) for gcp in gcps]
     viewer_positions = viewer_points + viewer_centers + viewer_gcps
     viewer_bounds = bounds_payload(viewer_positions)
     view_bounds = robust_bounds_payload(viewer_positions)
-    frustum_scale = max(view_bounds["diagonal"] * 0.025, 1.0)
+    orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
+    compact_scale_controls = is_colmap_view(metadata, "COLMAP")
+    frustum_factor = 0.06 if compact_scale_controls else 0.025
+    frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
 
     sampled_images = images[:: max(1, camera_stride)]
     frustum_vertices = []
     for image in sampled_images:
-        frustum_vertices.extend(frustum_segments(image, cameras[image.camera_id], frustum_scale))
+        frustum_vertices.extend(frustum_segments(image, cameras[image.camera_id], frustum_scale, vertical_sign))
 
     return {
         "format": "COLMAP",
@@ -435,6 +499,13 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
         },
         "bounds": viewer_bounds,
         "viewBounds": view_bounds,
+        "orbitBounds": orbit_bounds,
+        "view": {
+            "verticalSign": vertical_sign,
+            "frustumScaleWorld": frustum_scale,
+            "compactScaleControls": compact_scale_controls,
+            "frustumScaleControl": frustum_scale_control(metadata),
+        },
         "points": {
             "positions": viewer_points,
             "colors": [[channel / 255.0 for channel in point.rgb] for point in points],
@@ -464,20 +535,25 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
     points = read_pvl_points(input_dir, max_points)
     gcps = read_gcps(input_dir)
     centers = [camera.center for camera in cameras]
+    dataset_metadata = read_dataset_metadata(input_dir)
+    vertical_sign = choose_vertical_sign([point.xyz for point in points], centers, dataset_metadata, "PVL-BA")
     all_xyz = [point.xyz for point in points] + centers + [gcp.xyz for gcp in gcps]
     min_bound, max_bound = bounds(all_xyz)
     diagonal = math.sqrt(sum((max_bound[index] - min_bound[index]) ** 2 for index in range(3)))
-    viewer_points = [world_to_viewer(point.xyz) for point in points]
-    viewer_centers = [world_to_viewer(center) for center in centers]
-    viewer_gcps = [world_to_viewer(gcp.xyz) for gcp in gcps]
+    viewer_points = [world_to_viewer(point.xyz, vertical_sign) for point in points]
+    viewer_centers = [world_to_viewer(center, vertical_sign) for center in centers]
+    viewer_gcps = [world_to_viewer(gcp.xyz, vertical_sign) for gcp in gcps]
     viewer_positions = viewer_points + viewer_centers + viewer_gcps
     viewer_bounds = bounds_payload(viewer_positions)
     view_bounds = robust_bounds_payload(viewer_positions)
-    frustum_scale = max(view_bounds["diagonal"] * 0.025, 1.0)
+    orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
+    compact_scale_controls = is_colmap_view(dataset_metadata, "PVL-BA")
+    frustum_factor = 0.06 if compact_scale_controls else 0.025
+    frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
     sampled_cameras = cameras[:: max(1, camera_stride)]
     frustum_vertices = []
     for camera in sampled_cameras:
-        frustum_vertices.extend(pvl_frustum_segments(camera, frustum_scale))
+        frustum_vertices.extend(pvl_frustum_segments(camera, frustum_scale, vertical_sign))
     observation_count, rmse = pvl_rmse(input_dir, cameras)
     noise_metadata = read_noise_metadata(input_dir)
     stats = {
@@ -499,6 +575,13 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
         "noiseMetadata": noise_metadata,
         "bounds": viewer_bounds,
         "viewBounds": view_bounds,
+        "orbitBounds": orbit_bounds,
+        "view": {
+            "verticalSign": vertical_sign,
+            "frustumScaleWorld": frustum_scale,
+            "compactScaleControls": compact_scale_controls,
+            "frustumScaleControl": frustum_scale_control(dataset_metadata),
+        },
         "points": {
             "positions": viewer_points,
             "colors": [[channel / 255.0 for channel in point.rgb] for point in points],
@@ -539,7 +622,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   <style>
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Inter, Segoe UI, Arial, sans-serif; background: #101215; color: #eef2f6; }
     #scene { position: fixed; inset: 0; }
-    #panel { position: fixed; left: 16px; top: 16px; width: min(360px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; background: rgba(18, 22, 27, 0.88); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,0.35); backdrop-filter: blur(10px); }
+    :root { --panel-width: min(360px, calc(100vw - 32px)); }
+    #panel { position: fixed; left: 16px; top: 16px; width: var(--panel-width); max-height: calc(100vh - 32px); overflow: auto; background: rgba(18, 22, 27, 0.88); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,0.35); backdrop-filter: blur(10px); transition: transform 160ms ease; }
+    body.panel-hidden #panel { transform: translateX(calc(-100% - 24px)); }
     #panel header { padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,0.10); }
     h1 { font-size: 16px; margin: 0 0 8px; font-weight: 650; letter-spacing: 0; }
     .source { color: #aeb8c3; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
@@ -558,6 +643,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     .gcp:last-child { border-bottom: 0; }
     .badge { color: #101215; background: #ffcc66; border-radius: 999px; padding: 2px 7px; font-weight: 700; text-align: center; }
     .empty { color: #aeb8c3; font-size: 12px; }
+    #panelToggle { position: fixed; left: min(calc(24px + var(--panel-width)), calc(100vw - 48px)); top: 16px; width: 32px; height: 32px; border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; background: rgba(18, 22, 27, 0.78); color: #eef2f6; cursor: pointer; font-size: 16px; transition: left 160ms ease, background 120ms ease; }
+    #panelToggle:hover { background: rgba(255,255,255,0.14); }
+    body.panel-hidden #panelToggle { left: 16px; }
     #hint { position: fixed; right: 16px; bottom: 14px; color: rgba(238,242,246,0.78); font-size: 12px; background: rgba(18, 22, 27, 0.68); border-radius: 6px; padding: 8px 10px; }
   </style>
 </head>
@@ -583,6 +671,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div id="gcps"></div>
     </section>
   </aside>
+  <button id="panelToggle" title="Toggle panel" aria-label="Toggle panel">&lt;</button>
   <div id="hint">Drag to rotate - wheel to zoom - right-drag to pan</div>
   <script id="payload" type="application/json">__PAYLOAD__</script>
   <script type="importmap">
@@ -621,12 +710,36 @@ HTML_TEMPLATE = r"""<!doctype html>
     const scene = new THREE.Scene();
     const sceneDiagonal = Math.max(data.bounds.diagonal, 1);
     const frameBounds = data.viewBounds || data.bounds;
+    const orbitBounds = data.orbitBounds || frameBounds;
     const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(sceneDiagonal * 20, 1000));
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    const center = new THREE.Vector3(...frameBounds.center);
-    const diagonal = Math.max(frameBounds.diagonal, 1);
+    const frameCenter = new THREE.Vector3(...frameBounds.center);
+    const frameDiagonal = Math.max(frameBounds.diagonal, 1);
+    const center = new THREE.Vector3(...orbitBounds.center);
+    const diagonal = Math.max(frameDiagonal, orbitBounds.diagonal || 1);
+    const compactScaleControls = data.view?.compactScaleControls === true;
+    const defaultPointSize = compactScaleControls
+      ? 0.005
+      : 0.08;
+    const defaultCameraPointSize = compactScaleControls
+      ? 0.004
+      : 0.45;
+    const frustumScaleControl = data.view?.frustumScaleControl || {};
+    const defaultFrustumScale = Number(frustumScaleControl.default ?? 0.1);
+    controls.zoomToCursor = compactScaleControls;
+    controls.screenSpacePanning = true;
+    controls.enablePan = true;
+    controls.enableRotate = true;
+    controls.enableZoom = true;
+    controls.minDistance = 0;
+    controls.maxDistance = Infinity;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+    controls.panSpeed = compactScaleControls ? 1.35 : 1.0;
+    controls.zoomSpeed = compactScaleControls ? 1.25 : 1.0;
+    controls.rotateSpeed = compactScaleControls ? 0.9 : 1.0;
     function resetView(top=false) {
       controls.target.copy(center);
       if (top) {
@@ -634,30 +747,41 @@ HTML_TEMPLATE = r"""<!doctype html>
       } else {
         camera.position.set(center.x - diagonal * 0.65, center.y + diagonal * 0.45, center.z + diagonal * 0.75);
       }
-      camera.near = Math.max(diagonal / 100000, 0.001);
+      camera.near = Math.max(frameDiagonal / 100000, 0.001);
       camera.far = Math.max(sceneDiagonal * 20, diagonal * 20, 1000);
       camera.updateProjectionMatrix();
       controls.update();
     }
 
-    const grid = new THREE.GridHelper(diagonal * 1.25, 12, 0x3b4752, 0x252d35);
-    grid.position.copy(center);
+    const grid = new THREE.GridHelper(frameDiagonal * 1.25, 12, 0x3b4752, 0x252d35);
+    grid.position.copy(frameCenter);
     scene.add(grid);
 
-    const axes = new THREE.AxesHelper(diagonal * 0.12);
-    axes.position.copy(center);
+    const axes = new THREE.AxesHelper(frameDiagonal * 0.12);
+    axes.position.copy(frameCenter);
     scene.add(axes);
 
     const pointGeometry = new THREE.BufferGeometry();
     pointGeometry.setAttribute('position', new THREE.Float32BufferAttribute(data.points.positions.flat(), 3));
     pointGeometry.setAttribute('color', new THREE.Float32BufferAttribute(data.points.colors.flat(), 3));
-    const pointMaterial = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, sizeAttenuation: true });
+    const pointSizeInput = document.getElementById('pointSize');
+    if (compactScaleControls) {
+      pointSizeInput.min = '0.005';
+      pointSizeInput.max = '0.20';
+      pointSizeInput.step = '0.005';
+    }
+    pointSizeInput.value = defaultPointSize.toFixed(3);
+    const frustumScaleInput = document.getElementById('frustumScale');
+    if (frustumScaleControl.min !== undefined) frustumScaleInput.min = String(frustumScaleControl.min);
+    if (frustumScaleControl.max !== undefined) frustumScaleInput.max = String(frustumScaleControl.max);
+    if (frustumScaleControl.step !== undefined) frustumScaleInput.step = String(frustumScaleControl.step);
+    const pointMaterial = new THREE.PointsMaterial({ size: defaultPointSize, vertexColors: true, sizeAttenuation: true });
     const pointCloud = new THREE.Points(pointGeometry, pointMaterial);
     scene.add(pointCloud);
 
     const cameraCenterGeometry = new THREE.BufferGeometry();
     cameraCenterGeometry.setAttribute('position', new THREE.Float32BufferAttribute(data.cameras.centers.flat(), 3));
-    const cameraCenterMaterial = new THREE.PointsMaterial({ size: 0.45, color: 0x52c7b8, sizeAttenuation: true });
+    const cameraCenterMaterial = new THREE.PointsMaterial({ size: defaultCameraPointSize, color: 0x52c7b8, sizeAttenuation: true });
     const cameraCenters = new THREE.Points(cameraCenterGeometry, cameraCenterMaterial);
     scene.add(cameraCenters);
 
@@ -707,6 +831,21 @@ HTML_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    const focusRaycaster = new THREE.Raycaster();
+    const focusPointer = new THREE.Vector2();
+    function focusOrbitTarget(event) {
+      if (!compactScaleControls) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      focusPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      focusPointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+      focusRaycaster.params.Points.threshold = Math.max(diagonal * 0.01, 0.02);
+      focusRaycaster.setFromCamera(focusPointer, camera);
+      const hits = focusRaycaster.intersectObjects([pointCloud, cameraCenters], false);
+      if (hits.length === 0) return;
+      controls.target.copy(hits[0].point);
+      controls.update();
+    }
+
     document.getElementById('togglePoints').addEventListener('change', event => pointCloud.visible = event.target.checked);
     document.getElementById('toggleCameras').addEventListener('change', event => {
       cameraCenters.visible = event.target.checked;
@@ -718,6 +857,11 @@ HTML_TEMPLATE = r"""<!doctype html>
     document.getElementById('frustumScale').addEventListener('input', event => setFrustumScale(Number(event.target.value)));
     document.getElementById('resetView').addEventListener('click', () => resetView(false));
     document.getElementById('topView').addEventListener('click', () => resetView(true));
+    document.getElementById('panelToggle').addEventListener('click', event => {
+      const hidden = document.body.classList.toggle('panel-hidden');
+      event.currentTarget.textContent = hidden ? '>' : '<';
+    });
+    renderer.domElement.addEventListener('dblclick', focusOrbitTarget);
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -725,7 +869,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    setFrustumScale(0.1);
+    frustumScaleInput.value = defaultFrustumScale.toString();
+    setFrustumScale(Number(frustumScaleInput.value));
     resetView(false);
     renderer.setAnimationLoop(() => {
       controls.update();

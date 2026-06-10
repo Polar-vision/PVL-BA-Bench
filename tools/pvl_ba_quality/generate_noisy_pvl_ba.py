@@ -714,7 +714,7 @@ def make_base_metadata(
     target_rmse: float,
     mode: str,
 ) -> dict:
-    return {
+    metadata = {
         "source": str(args.input_dir.resolve()),
         "dataset_name": output_dir.name,
         "mode": mode,
@@ -728,6 +728,16 @@ def make_base_metadata(
         "observations": observation_count,
         "gcps": gcp_count,
     }
+    source_metadata_path = args.input_dir / "dataset_metadata.json"
+    if source_metadata_path.exists():
+        try:
+            source_metadata = json.loads(source_metadata_path.read_text(encoding="utf-8"))
+            for key in ("source_software_vendor", "source_software"):
+                if source_metadata.get(key):
+                    metadata[key] = source_metadata[key]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    return metadata
 
 
 def write_metadata(path: Path, metadata: dict) -> None:

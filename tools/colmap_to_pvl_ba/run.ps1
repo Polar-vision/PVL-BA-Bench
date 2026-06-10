@@ -2,7 +2,9 @@ param(
     [string]$InputDir = "..\COLMAP_TEXT_MODEL",
     [string]$OutputDir = "..\PVL_BA_OUTPUT",
     [ValidateSet("id_minus_one", "row")]
-    [string]$ImageIndex = "id_minus_one"
+    [string]$ImageIndex = "id_minus_one",
+    [ValidateSet("memory", "sqlite")]
+    [string]$Backend = "memory"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,5 +33,5 @@ if (-not $python -or $python.Source -like "*\WindowsApps\python.exe") {
 & $pythonExe (Join-Path $scriptDir "colmap_to_pvl_ba.py") `
     --input (Resolve-ProjectPath $InputDir) `
     --output (Resolve-ProjectPath $OutputDir) `
-    --image-index $ImageIndex
-
+    --image-index $ImageIndex `
+    --backend $Backend

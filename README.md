@@ -201,6 +201,22 @@ manifests/abs_12.csv
 
 This manifest contains 12 valid ABS BA problems. The manifest and generated metadata include `source_software_vendor` and `source_software` fields to keep the Cloud Earth provenance separate from Reconstruction Master exports.
 
+The REL Cloud Earth blocks without GCPs are listed in:
+
+```text
+manifests/rel.csv
+```
+
+This manifest contains 96 valid REL BA problems from 99 Cloud Earth exports after filtering blocks with suspicious intrinsics or geometry. REL blocks have no GCPs, so the released dataset names and metadata use `g0-c0`.
+
+The COLMAP text-model BA blocks are listed in:
+
+```text
+manifests/ba_colmap_122.csv
+```
+
+This manifest contains 122 COLMAP `cameras.txt/images.txt/points3D.txt` models from `BA/Colmap_Output`. These blocks have no GCPs, so released dataset names and metadata use `g0-c0`.
+
 ## Input Format
 
 `AT.xml` files are treated as **BlocksExchange XML** inputs. This format is commonly associated with Bentley ContextCapture / iTwin Capture orientation exports and is also produced by compatible photogrammetry software, including Daspatial Reconstruction Master and Cloud Earth outputs.

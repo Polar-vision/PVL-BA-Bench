@@ -34,6 +34,8 @@ class ManifestRow:
     checkpoints: int
     gcp_observations: int
     photogroups: int
+    source_software_vendor: str = ""
+    source_software: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,6 +131,8 @@ def read_manifest(path: Path) -> list[ManifestRow]:
                     checkpoints=int(raw["checkpoints"]),
                     gcp_observations=int(raw["gcp_observations"]),
                     photogroups=int(raw["photogroups"]),
+                    source_software_vendor=raw.get("source_software_vendor", ""),
+                    source_software=raw.get("source_software", ""),
                 )
             )
     return rows
@@ -288,6 +292,10 @@ def write_dataset_metadata(output_dir: Path, row: ManifestRow) -> None:
         "gcp_observations": gcp_observation_count,
         "photogroups": row.photogroups,
     }
+    if row.source_software_vendor:
+        metadata["source_software_vendor"] = row.source_software_vendor
+    if row.source_software:
+        metadata["source_software"] = row.source_software
     (output_dir / "dataset_metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
 

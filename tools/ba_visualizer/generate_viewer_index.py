@@ -17,8 +17,10 @@ DATASET_RE = re.compile(
 )
 AREA_LABELS = {
     "abs": "ABS",
+    "ba-colmap": "BA COLMAP",
     "changji": "Changji",
     "feice-road": "Feice Road",
+    "rel": "REL",
     "shiyan": "Shiyan",
 }
 

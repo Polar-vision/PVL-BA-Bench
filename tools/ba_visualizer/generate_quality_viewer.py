@@ -308,6 +308,8 @@ def enrich_payload(payload: dict, dataset: QualityDataset, input_dir: Path, metr
         "stats": stats,
         "bounds": payload["bounds"],
         "viewBounds": payload.get("viewBounds", payload["bounds"]),
+        "orbitBounds": payload.get("orbitBounds", payload.get("viewBounds", payload["bounds"])),
+        "view": payload.get("view", {}),
         "points": payload["points"],
         "cameras": payload["cameras"],
         "gcps": payload["gcps"],
@@ -349,12 +351,15 @@ def build_quality_payload(
     reference_frame = datasets[reference_index].get("viewBounds", datasets[reference_index]["bounds"])
     reference_diagonal = reference_frame["diagonal"]
     shared_diagonal = max(reference_diagonal, 1.0)
-    shared_frustum_scale = max(shared_diagonal * 0.025, 1.0)
+    compact_scale_controls = any(dataset.get("view", {}).get("compactScaleControls") is True for dataset in datasets)
+    frustum_factor = 0.06 if compact_scale_controls else 0.025
+    shared_frustum_scale = max(shared_diagonal * frustum_factor, 1.0)
     for output_dataset, (_dataset, _payload, cameras) in zip(datasets, raw_items):
         sampled_cameras = cameras[:: max(1, camera_stride)]
+        vertical_sign = float(output_dataset.get("view", {}).get("verticalSign", 1.0))
         frustum_vertices = []
         for camera in sampled_cameras:
-            frustum_vertices.extend(generate_viewer.pvl_frustum_segments(camera, shared_frustum_scale))
+            frustum_vertices.extend(generate_viewer.pvl_frustum_segments(camera, shared_frustum_scale, vertical_sign))
         output_dataset["cameras"]["frustumVertices"] = frustum_vertices
         output_dataset["stats"]["sharedFrustumScale"] = shared_frustum_scale
     return {
@@ -376,7 +381,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   <style>
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Inter, Segoe UI, Arial, sans-serif; background: #101215; color: #eef2f6; }
     #scene { position: fixed; inset: 0; }
-    #panel { position: fixed; left: 16px; top: 16px; width: min(410px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; background: rgba(18, 22, 27, 0.90); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,0.35); backdrop-filter: blur(10px); }
+    :root { --panel-width: min(410px, calc(100vw - 32px)); }
+    #panel { position: fixed; left: 16px; top: 16px; width: var(--panel-width); max-height: calc(100vh - 32px); overflow: auto; background: rgba(18, 22, 27, 0.90); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,0.35); backdrop-filter: blur(10px); transition: transform 160ms ease; }
+    body.panel-hidden #panel { transform: translateX(calc(-100% - 24px)); }
     #panel header { padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,0.10); }
     h1 { font-size: 16px; margin: 0 0 8px; font-weight: 650; letter-spacing: 0; }
     h2 { font-size: 12px; margin: 12px 0 8px; color: #aeb8c3; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -401,6 +408,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     .gcp:last-child { border-bottom: 0; }
     .badge { color: #101215; background: #ffcc66; border-radius: 999px; padding: 2px 7px; font-weight: 700; text-align: center; }
     .empty { color: #aeb8c3; font-size: 12px; }
+    #panelToggle { position: fixed; left: min(calc(24px + var(--panel-width)), calc(100vw - 48px)); top: 16px; width: 32px; height: 32px; border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; background: rgba(18, 22, 27, 0.78); color: #eef2f6; cursor: pointer; font-size: 16px; transition: left 160ms ease, background 120ms ease; }
+    #panelToggle:hover { background: rgba(255,255,255,0.14); }
+    body.panel-hidden #panelToggle { left: 16px; }
     #hint { position: fixed; right: 16px; bottom: 14px; color: rgba(238,242,246,0.78); font-size: 12px; background: rgba(18, 22, 27, 0.68); border-radius: 6px; padding: 8px 10px; }
   </style>
 </head>
@@ -428,6 +438,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div id="gcps"></div>
     </section>
   </aside>
+  <button id="panelToggle" title="Toggle panel" aria-label="Toggle panel">&lt;</button>
   <div id="hint">Drag to rotate - wheel to zoom - right-drag to pan</div>
   <script id="payload" type="application/json">__PAYLOAD__</script>
   <script type="importmap">
@@ -472,9 +483,45 @@ HTML_TEMPLATE = r"""<!doctype html>
     const scene = new THREE.Scene();
     const sceneDiagonal = Math.max(payload.bounds.diagonal, 1);
     let activeFrame = null;
+    const compactScaleControls = datasets.some(dataset => dataset.view?.compactScaleControls === true);
+    const defaultPointSize = compactScaleControls
+      ? 0.005
+      : 0.08;
+    const defaultCameraPointSize = compactScaleControls
+      ? 0.004
+      : 0.45;
+    const defaultReferenceCameraPointSize = compactScaleControls ? defaultCameraPointSize * 0.75 : 0.34;
+    const frustumScaleControl = datasets.map(dataset => dataset.view?.frustumScaleControl || {}).find(config => config.default !== undefined) || {};
+    const defaultFrustumScale = Number(frustumScaleControl.default ?? 0.1);
+    state.pointSize = defaultPointSize;
+    state.frustumScale = defaultFrustumScale;
+    const pointSizeInput = document.getElementById('pointSize');
+    if (compactScaleControls) {
+      pointSizeInput.min = '0.005';
+      pointSizeInput.max = '0.20';
+      pointSizeInput.step = '0.005';
+    }
+    pointSizeInput.value = defaultPointSize.toFixed(3);
+    const frustumScaleInput = document.getElementById('frustumScale');
+    if (frustumScaleControl.min !== undefined) frustumScaleInput.min = String(frustumScaleControl.min);
+    if (frustumScaleControl.max !== undefined) frustumScaleInput.max = String(frustumScaleControl.max);
+    if (frustumScaleControl.step !== undefined) frustumScaleInput.step = String(frustumScaleControl.step);
+    frustumScaleInput.value = defaultFrustumScale.toString();
     const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, Math.max(sceneDiagonal * 20, 1000));
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    controls.zoomToCursor = compactScaleControls;
+    controls.screenSpacePanning = true;
+    controls.enablePan = true;
+    controls.enableRotate = true;
+    controls.enableZoom = true;
+    controls.minDistance = 0;
+    controls.maxDistance = Infinity;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+    controls.panSpeed = compactScaleControls ? 1.35 : 1.0;
+    controls.zoomSpeed = compactScaleControls ? 1.25 : 1.0;
+    controls.rotateSpeed = compactScaleControls ? 0.9 : 1.0;
 
     const grid = new THREE.GridHelper(1, 12, 0x3b4752, 0x252d35);
     scene.add(grid);
@@ -484,9 +531,12 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function frameForDataset(index) {
       const frame = datasets[index]?.viewBounds || datasets[index]?.bounds || payload.bounds;
+      const orbit = datasets[index]?.orbitBounds || frame;
       return {
         center: new THREE.Vector3(...frame.center),
         diagonal: Math.max(frame.diagonal, 1),
+        orbitCenter: new THREE.Vector3(...orbit.center),
+        orbitDiagonal: Math.max(orbit.diagonal, 1),
       };
     }
 
@@ -528,7 +578,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       const centerGeometry = new THREE.BufferGeometry();
       centerGeometry.setAttribute('position', new THREE.Float32BufferAttribute(data.cameras.centers.flat(), 3));
       const centerMaterial = new THREE.PointsMaterial({
-        size: reference ? 0.34 : 0.45,
+        size: reference ? defaultReferenceCameraPointSize : defaultCameraPointSize,
         color: reference ? 0xdce3ea : 0x52c7b8,
         transparent: reference,
         opacity: reference ? 0.62 : 1.0,
@@ -627,6 +677,25 @@ HTML_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    const focusRaycaster = new THREE.Raycaster();
+    const focusPointer = new THREE.Vector2();
+    function focusOrbitTarget(event) {
+      if (!compactScaleControls || !activeHandles || !activeFrame) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      focusPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      focusPointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+      focusRaycaster.params.Points.threshold = Math.max(activeFrame.diagonal * 0.01, 0.02);
+      focusRaycaster.setFromCamera(focusPointer, camera);
+      const targets = [activeHandles.pointCloud, activeHandles.cameraCenters];
+      if (referenceHandles?.group.visible) {
+        targets.push(referenceHandles.pointCloud, referenceHandles.cameraCenters);
+      }
+      const hits = focusRaycaster.intersectObjects(targets, false);
+      if (hits.length === 0) return;
+      controls.target.copy(hits[0].point);
+      controls.update();
+    }
+
     function setActive(index) {
       activeIndex = index;
       if (activeGroup) scene.remove(activeGroup);
@@ -723,8 +792,8 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function resetView(top=false) {
       if (!activeFrame) updateFrame(activeIndex);
-      const center = activeFrame.center;
-      const diagonal = activeFrame.diagonal;
+      const center = activeFrame.orbitCenter;
+      const diagonal = Math.max(activeFrame.diagonal, activeFrame.orbitDiagonal);
       controls.target.copy(center);
       if (top) {
         camera.position.set(center.x, center.y + diagonal * 1.35, center.z + 0.001);
@@ -753,6 +822,11 @@ HTML_TEMPLATE = r"""<!doctype html>
     document.getElementById('frustumScale').addEventListener('input', event => { state.frustumScale = Number(event.target.value); applyVisibility(); });
     document.getElementById('resetView').addEventListener('click', () => resetView(false));
     document.getElementById('topView').addEventListener('click', () => resetView(true));
+    document.getElementById('panelToggle').addEventListener('click', event => {
+      const hidden = document.body.classList.toggle('panel-hidden');
+      event.currentTarget.textContent = hidden ? '>' : '<';
+    });
+    renderer.domElement.addEventListener('dblclick', focusOrbitTarget);
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
