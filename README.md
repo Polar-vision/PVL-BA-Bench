@@ -10,6 +10,9 @@ The complete public dataset release is available through these mirrors:
 
 - Release index and interactive viewers: <https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html>
 - Downloadable data packages: <https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench>
+- Dataset DOI: <https://doi.org/10.57967/hf/9218>
+- Archived software release DOI: <https://doi.org/10.5281/zenodo.20744066>
+- License: Creative Commons Attribution 4.0 International (`CC-BY-4.0`)
 
 The release contains 978 BA problems and 2,934 downloadable ZIP packages: 978 PVL-BA packages, 978 COLMAP packages, and 978 BAL packages. The collections include 16 ABS blocks, 820 REL blocks, 20 controlled aerotriangulation blocks, and 122 COLMAP text-model BA blocks.
 
@@ -269,6 +272,31 @@ pip install pyproj
 
 This repository contains tools, format documentation, release manifests, and packaging scripts. Dataset download links and browser viewers are published at the [PVL-BA-Bench Public Release](https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html), with package storage mirrored by the [Hugging Face dataset repository](https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench).
 
+## License
+
+PVL-BA-Bench is released under the Creative Commons Attribution 4.0 International license (`CC-BY-4.0`). Please cite the dataset DOI and the archived software release DOI when using the released data or tools.
+
 ## Citation
 
-Citation information will be added when the benchmark paper or technical report is released.
+If you use PVL-BA-Bench, cite both the dataset and the archived software release:
+
+```bibtex
+@dataset{pvl_ba_bench_dataset_2026,
+  title        = {PVL-BA-Bench},
+  author       = {{Polar-vision Lab}},
+  year         = {2026},
+  publisher    = {Hugging Face},
+  doi          = {10.57967/hf/9218},
+  url          = {https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench}
+}
+
+@software{pvl_ba_bench_software_2026,
+  title        = {Polar-vision/PVL-BA-Bench: PVL-BA-Bench v1.0.0 Official Release},
+  author       = {{Polar-vision Lab}},
+  year         = {2026},
+  publisher    = {Zenodo},
+  version      = {v1.0.0},
+  doi          = {10.5281/zenodo.20744066},
+  url          = {https://doi.org/10.5281/zenodo.20744066}
+}
+```

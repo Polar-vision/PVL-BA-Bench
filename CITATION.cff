@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use PVL-BA-Bench, please cite both the dataset DOI and the archived software release DOI."
+title: "PVL-BA-Bench"
+type: dataset
+authors:
+  - family-names: Zuo
+    given-names: Zhengkang
+  - family-names: Gao
+    given-names: Yunlong
+  - family-names: Zhang
+    given-names: Fan
+  - family-names: Dong
+    given-names: Jiaojiao
+  - family-names: Liu
+    given-names: Dongxia
+  - family-names: Liu
+    given-names: Wenxuan
+  - family-names: Yang
+    given-names: Chong
+  - family-names: Li
+    given-names: Xiaokai
+  - family-names: Zhu
+    given-names: Guihai
+  - family-names: Chen
+    given-names: Wanli
+  - family-names: Huang
+    given-names: Dailong
+  - family-names: Wan
+    given-names: Yalong
+  - family-names: Huang
+    given-names: Xianfeng
+version: "v1.0.0"
+date-released: "2026-06-18"
+license: "CC-BY-4.0"
+doi: "10.57967/hf/9218"
+url: "https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench"
+repository-code: "https://github.com/Polar-vision/PVL-BA-Bench"
+identifiers:
+  - type: doi
+    value: "10.57967/hf/9218"
+    description: "Dataset DOI"
+  - type: doi
+    value: "10.5281/zenodo.20744066"
+    description: "Archived software release DOI"
