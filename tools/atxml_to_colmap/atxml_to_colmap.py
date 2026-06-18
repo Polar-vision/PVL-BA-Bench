@@ -268,7 +268,7 @@ def stream_metadata(
     images: dict[int, Image] = {}
     image_id_by_source_id: dict[int, int] = {}
     references: dict[int, SpatialReference] = {}
-    target_srs_id: int | None = None
+    target_srs_id = 0
     element_stack: list[ET.Element] = []
     tag_stack: list[str] = []
 
@@ -308,7 +308,7 @@ def stream_metadata(
             remove_from_parent(element_stack, element)
         elif element.tag in {"TiePoint", "ControlPoint"}:
             remove_from_parent(element_stack, element)
-        elif element.tag == "Photogroups" and target_srs_id is not None:
+        elif element.tag == "Photogroups":
             break
 
         element_stack.pop()
@@ -316,8 +316,6 @@ def stream_metadata(
 
     if not cameras:
         raise ValueError("Missing Photogroup element")
-    if target_srs_id is None:
-        raise ValueError("Missing Block/SRSId")
     return cameras, images, image_id_by_source_id, references, target_srs_id
 
 

@@ -2,7 +2,17 @@
 
 Large-scale bundle adjustment benchmark datasets and conversion tools from **Polar-vision Lab**.
 
-This repository hosts the public tools and documentation for **PVL-BA-Bench**. The benchmark is designed for large-scale bundle adjustment and photogrammetric optimization research. The planned release contains 500 image blocks, including at least 100 ultra-large blocks with more than 50,000 images each. Some blocks include ground control points (GCPs).
+This repository hosts the public tools, manifests, and documentation for **PVL-BA-Bench**. The benchmark is designed for large-scale bundle adjustment and photogrammetric optimization research. Some blocks include ground control points (GCPs), and the release includes PVL-BA, COLMAP, BAL, quality-variant, and browser-viewer artifacts.
+
+## Public Dataset Release
+
+The public dataset release is available at:
+
+```text
+https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html
+```
+
+The release page provides dataset-level metadata, interactive viewers, and downloadable PVL-BA, COLMAP, and BAL artifacts generated from the manifests in this repository.
 
 ## Naming
 
@@ -196,10 +206,10 @@ This manifest contains 20 unique BA problems after removing duplicate Shiyan fir
 The ABS Cloud Earth blocks are listed in:
 
 ```text
-manifests/abs_12.csv
+manifests/abs_16.csv
 ```
 
-This manifest contains 12 valid ABS BA problems. The manifest and generated metadata include `source_software_vendor` and `source_software` fields to keep the Cloud Earth provenance separate from Reconstruction Master exports.
+This manifest contains 16 valid ABS BA problems. The manifest and generated metadata include `source_software_vendor` and `source_software` fields to keep the Cloud Earth provenance separate from Reconstruction Master exports.
 
 The REL Cloud Earth blocks without GCPs are listed in:
 
@@ -207,7 +217,7 @@ The REL Cloud Earth blocks without GCPs are listed in:
 manifests/rel.csv
 ```
 
-This manifest contains 96 valid REL BA problems from 99 Cloud Earth exports after filtering blocks with suspicious intrinsics or geometry. REL blocks have no GCPs, so the released dataset names and metadata use `g0-c0`.
+This manifest contains 820 valid REL BA problems after filtering blocks with suspicious intrinsics or geometry. REL blocks have no GCPs, so the released dataset names and metadata use `g0-c0`.
 
 The COLMAP text-model BA blocks are listed in:
 
@@ -216,6 +226,33 @@ manifests/ba_colmap_122.csv
 ```
 
 This manifest contains 122 COLMAP `cameras.txt/images.txt/points3D.txt` models from `BA/Colmap_Output`. These blocks have no GCPs, so released dataset names and metadata use `g0-c0`.
+
+### Public Release Packaging
+
+Prepare community-facing manifests, package metadata, checksum files, URL lists, and a static viewer index:
+
+```powershell
+python tools\package_public_release.py `
+  --output-root outputs\public_release `
+  --base-data-url https://example.org/pvl-ba-bench/data/ `
+  --base-viewer-url https://example.org/pvl-ba-bench/viewers/
+```
+
+By default this writes only release metadata and `site\index.html`; it does not compress the large dataset files. Use `--require-complete` before a final publication pass to fail if any requested PVL-BA, COLMAP, BAL, or viewer artifact is missing.
+
+Create per-dataset archives after all release formats are complete:
+
+```powershell
+python tools\package_public_release.py `
+  --output-root outputs\public_release `
+  --archive-format zip `
+  --compression-level 1 `
+  --package `
+  --skip-existing `
+  --require-complete
+```
+
+The generated `manifest\datasets.csv`, `manifest\artifacts.csv`, `manifest\viewers.csv`, `manifest\checksums.sha256`, and `manifest\urls.txt` are intended for DOI repositories, object storage mirrors, and static website/CDN publication.
 
 ## Input Format
 
@@ -229,7 +266,7 @@ pip install pyproj
 
 ## Repository Status
 
-This repository currently contains tools and format documentation. Dataset download links and benchmark protocols will be added with the public PVL-BA500 release.
+This repository currently contains tools, format documentation, release manifests, and packaging scripts. Dataset download links and browser viewers are published at the [PVL-BA-Bench Public Release](https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html).
 
 ## Citation
 

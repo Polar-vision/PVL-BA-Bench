@@ -553,9 +553,21 @@ def is_kitti_view(metadata: dict) -> bool:
     return any(part == "KITTI" for value in (source, source_name) for part in value.split("/"))
 
 
+def use_compact_scale_controls(metadata: dict, dataset_format: str) -> bool:
+    area = str(metadata.get("area", "")).lower()
+    return is_colmap_view(metadata, dataset_format) or area in {"abs", "rel"} or is_kitti_view(metadata)
+
+
 def frustum_scale_control(metadata: dict) -> dict:
-    if not is_kitti_view(metadata):
+    if not use_compact_scale_controls(metadata, str(metadata.get("source_format", ""))):
         return {}
+    if not is_kitti_view(metadata):
+        return {
+            "min": 0.01,
+            "max": 2.0,
+            "step": 0.01,
+            "default": 0.1,
+        }
     return {
         "min": 0.01,
         "max": 5.0,
@@ -583,7 +595,7 @@ def build_colmap_payload(input_dir: Path, max_points: int, camera_stride: int) -
     view_bounds = robust_bounds_payload(viewer_positions)
     orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
     grid_plane = principal_grid_plane(viewer_points)
-    compact_scale_controls = is_colmap_view(metadata, "COLMAP")
+    compact_scale_controls = use_compact_scale_controls(metadata, "COLMAP")
     frustum_factor = 0.06 if compact_scale_controls else 0.025
     frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
 
@@ -654,7 +666,7 @@ def build_pvl_payload(input_dir: Path, max_points: int, camera_stride: int) -> d
     view_bounds = robust_bounds_payload(viewer_positions)
     orbit_bounds = robust_bounds_payload(viewer_points) if viewer_points else view_bounds
     grid_plane = principal_grid_plane(viewer_points)
-    compact_scale_controls = is_colmap_view(dataset_metadata, "PVL-BA")
+    compact_scale_controls = use_compact_scale_controls(dataset_metadata, "PVL-BA")
     frustum_factor = 0.06 if compact_scale_controls else 0.025
     frustum_scale = max(view_bounds["diagonal"] * frustum_factor, 1.0)
     sampled_cameras = cameras[:: max(1, camera_stride)]
@@ -828,11 +840,12 @@ HTML_TEMPLATE = r"""<!doctype html>
     const center = new THREE.Vector3(...orbitBounds.center);
     const diagonal = Math.max(frameDiagonal, orbitBounds.diagonal || 1);
     const compactScaleControls = data.view?.compactScaleControls === true;
+    const displayScale = Math.max(frameDiagonal, 1);
     const defaultPointSize = compactScaleControls
-      ? 0.005
+      ? Math.max(displayScale * 0.0007, 0.01)
       : 0.08;
     const defaultCameraPointSize = compactScaleControls
-      ? 0.004
+      ? Math.max(displayScale * 0.0016, 0.02)
       : 0.45;
     const frustumScaleControl = data.view?.frustumScaleControl || {};
     const defaultFrustumScale = Number(frustumScaleControl.default ?? 0.1);
@@ -886,9 +899,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     pointGeometry.setAttribute('color', new THREE.Float32BufferAttribute(data.points.colors.flat(), 3));
     const pointSizeInput = document.getElementById('pointSize');
     if (compactScaleControls) {
-      pointSizeInput.min = '0.005';
-      pointSizeInput.max = '0.20';
-      pointSizeInput.step = '0.005';
+      pointSizeInput.min = Math.max(defaultPointSize * 0.2, 0.001).toFixed(4);
+      pointSizeInput.max = (defaultPointSize * 8).toFixed(4);
+      pointSizeInput.step = Math.max(defaultPointSize * 0.1, 0.001).toFixed(4);
     }
     pointSizeInput.value = defaultPointSize.toFixed(3);
     const frustumScaleInput = document.getElementById('frustumScale');

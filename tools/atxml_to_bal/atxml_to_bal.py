@@ -136,7 +136,7 @@ def parse_photogroups(block: ET.Element) -> dict[int, Camera]:
 def stream_metadata(input_path: Path) -> tuple[dict[int, Camera], dict[int, SpatialReference], int]:
     cameras: dict[int, Camera] = {}
     references: dict[int, SpatialReference] = {}
-    target_srs_id: int | None = None
+    target_srs_id = 0
     element_stack: list[ET.Element] = []
     tag_stack: list[str] = []
 
@@ -167,7 +167,7 @@ def stream_metadata(input_path: Path) -> tuple[dict[int, Camera], dict[int, Spat
             remove_from_parent(element_stack, element)
         elif element.tag in {"TiePoint", "ControlPoint"}:
             remove_from_parent(element_stack, element)
-        elif element.tag == "Photogroups" and target_srs_id is not None:
+        elif element.tag == "Photogroups":
             break
 
         element_stack.pop()
@@ -175,8 +175,6 @@ def stream_metadata(input_path: Path) -> tuple[dict[int, Camera], dict[int, Spat
 
     if not cameras:
         raise ValueError("Missing valid cameras")
-    if target_srs_id is None:
-        raise ValueError("Missing Block/SRSId")
     return cameras, references, target_srs_id
 
 

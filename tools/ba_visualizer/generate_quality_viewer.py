@@ -485,11 +485,13 @@ HTML_TEMPLATE = r"""<!doctype html>
     const sceneDiagonal = Math.max(payload.bounds.diagonal, 1);
     let activeFrame = null;
     const compactScaleControls = datasets.some(dataset => dataset.view?.compactScaleControls === true);
+    const referenceFrameForScale = datasets[referenceIndex]?.viewBounds || datasets[referenceIndex]?.bounds || payload.bounds;
+    const displayScale = Math.max(referenceFrameForScale.diagonal || sceneDiagonal, 1);
     const defaultPointSize = compactScaleControls
-      ? 0.005
+      ? Math.max(displayScale * 0.0007, 0.01)
       : 0.08;
     const defaultCameraPointSize = compactScaleControls
-      ? 0.004
+      ? Math.max(displayScale * 0.0016, 0.02)
       : 0.45;
     const defaultReferenceCameraPointSize = compactScaleControls ? defaultCameraPointSize * 0.75 : 0.34;
     const frustumScaleControl = datasets.map(dataset => dataset.view?.frustumScaleControl || {}).find(config => config.default !== undefined) || {};
@@ -498,9 +500,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     state.frustumScale = defaultFrustumScale;
     const pointSizeInput = document.getElementById('pointSize');
     if (compactScaleControls) {
-      pointSizeInput.min = '0.005';
-      pointSizeInput.max = '0.20';
-      pointSizeInput.step = '0.005';
+      pointSizeInput.min = Math.max(defaultPointSize * 0.2, 0.001).toFixed(4);
+      pointSizeInput.max = (defaultPointSize * 8).toFixed(4);
+      pointSizeInput.step = Math.max(defaultPointSize * 0.1, 0.001).toFixed(4);
     }
     pointSizeInput.value = defaultPointSize.toFixed(3);
     const frustumScaleInput = document.getElementById('frustumScale');

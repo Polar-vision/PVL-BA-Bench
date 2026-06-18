@@ -81,11 +81,21 @@ def parse_filename(path: Path) -> ViewerEntry | None:
 
 def collect_entries(viewer_dir: Path, manifest: Path | None) -> list[ViewerEntry]:
     by_manifest = manifest_entries(manifest) if manifest else {}
+    if by_manifest:
+        entries = [
+            entry
+            for filename, entry in by_manifest.items()
+            if (viewer_dir / filename).exists()
+        ]
+        area_order = {area: index for index, area in enumerate(AREA_LABELS)}
+        entries.sort(key=lambda item: (area_order.get(item.area, 99), item.file))
+        return entries
+
     entries = []
     for path in sorted(viewer_dir.glob("*.html")):
         if path.name == "index.html":
             continue
-        entry = by_manifest.get(path.name) or parse_filename(path)
+        entry = parse_filename(path)
         if entry is not None:
             entries.append(entry)
     area_order = {area: index for index, area in enumerate(AREA_LABELS)}

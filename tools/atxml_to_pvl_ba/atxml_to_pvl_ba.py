@@ -150,7 +150,7 @@ def stream_metadata(input_path: Path) -> tuple[list[Intrinsics], dict[int, Photo
     photos: dict[int, Photo] = {}
     intrinsics_by_photo_id: dict[int, Intrinsics] = {}
     references: dict[int, SpatialReference] = {}
-    target_srs_id: int | None = None
+    target_srs_id = 0
     element_stack: list[ET.Element] = []
     tag_stack: list[str] = []
 
@@ -184,7 +184,7 @@ def stream_metadata(input_path: Path) -> tuple[list[Intrinsics], dict[int, Photo
             remove_from_parent(element_stack, element)
         elif element.tag in {"TiePoint", "ControlPoint"}:
             remove_from_parent(element_stack, element)
-        elif element.tag == "Photogroups" and target_srs_id is not None:
+        elif element.tag == "Photogroups":
             break
 
         element_stack.pop()
@@ -192,8 +192,6 @@ def stream_metadata(input_path: Path) -> tuple[list[Intrinsics], dict[int, Photo
 
     if not intrinsics_by_group:
         raise ValueError("Missing Photogroup")
-    if target_srs_id is None:
-        raise ValueError("Missing Block/SRSId")
     return intrinsics_by_group, photos, intrinsics_by_photo_id, references, target_srs_id
 
 
