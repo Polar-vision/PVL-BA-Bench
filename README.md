@@ -17,7 +17,6 @@ The release page provides dataset-level metadata, interactive viewers, and downl
 ## Naming
 
 - **PVL-BA-Bench**: the benchmark project and GitHub repository.
-- **PVL-BA500**: the planned 500-block benchmark dataset.
 - **PVL-BA**: the Polar-vision Lab four-file bundle adjustment data format.
 
 Dataset instances use explicit count tags:
