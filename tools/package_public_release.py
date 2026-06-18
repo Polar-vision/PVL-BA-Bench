@@ -396,7 +396,7 @@ def write_site_index(
     viewer_by_dataset = {(str(row["collection"]), str(row["dataset_name"])): row for row in viewer_rows}
 
     body_rows = []
-    for dataset in dataset_rows:
+    for row_number, dataset in enumerate(dataset_rows, start=1):
         key = (str(dataset["collection"]), str(dataset["dataset_name"]))
         viewer = viewer_by_dataset.get(key)
         if viewer and viewer.get("complete"):
@@ -420,6 +420,7 @@ def write_site_index(
                 download_links.append(f'<span class="muted">{html.escape(label)}</span>')
         body_rows.append(
             "<tr>"
+            f"<td class=\"row-number\">{row_number}</td>"
             f"<td>{html.escape(str(dataset['collection']))}</td>"
             f"<td>{html.escape(str(dataset['dataset_name']))}</td>"
             f"<td>{html.escape(str(dataset['images']))}</td>"
@@ -444,6 +445,7 @@ def write_site_index(
     th {{ background: #f5f6f7; position: sticky; top: 0; }}
     a {{ color: #0b57d0; text-decoration: none; margin-right: 8px; }}
     .muted {{ color: #777; margin-right: 8px; }}
+    .row-number {{ text-align: right; color: #5f6368; }}
   </style>
 </head>
 <body>
@@ -452,6 +454,7 @@ def write_site_index(
   <table>
     <thead>
       <tr>
+        <th>No.</th>
         <th>Collection</th>
         <th>Dataset</th>
         <th>Images</th>

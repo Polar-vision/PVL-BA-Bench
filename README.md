@@ -6,13 +6,14 @@ This repository hosts the public tools, manifests, and documentation for **PVL-B
 
 ## Public Dataset Release
 
-The public dataset release is available at:
+The complete public dataset release is available through these mirrors:
 
-```text
-https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html
-```
+- Release index and interactive viewers: <https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html>
+- Downloadable data packages: <https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench>
 
-The release page provides dataset-level metadata, interactive viewers, and downloadable PVL-BA, COLMAP, and BAL artifacts generated from the manifests in this repository.
+The release contains 978 BA problems and 2,934 downloadable ZIP packages: 978 PVL-BA packages, 978 COLMAP packages, and 978 BAL packages. The collections include 16 ABS blocks, 820 REL blocks, 20 controlled aerotriangulation blocks, and 122 COLMAP text-model BA blocks.
+
+The R2 site serves the static release index and viewer HTML files under `viewers/`. The ZIP packages are hosted in the Hugging Face dataset repository under `packages/`.
 
 ## Naming
 
@@ -233,11 +234,12 @@ Prepare community-facing manifests, package metadata, checksum files, URL lists,
 ```powershell
 python tools\package_public_release.py `
   --output-root outputs\public_release `
-  --base-data-url https://example.org/pvl-ba-bench/data/ `
-  --base-viewer-url https://example.org/pvl-ba-bench/viewers/
+  --base-data-url https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench/resolve/main/ `
+  --base-viewer-url https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/viewers/
 ```
 
 By default this writes only release metadata and `site\index.html`; it does not compress the large dataset files. Use `--require-complete` before a final publication pass to fail if any requested PVL-BA, COLMAP, BAL, or viewer artifact is missing.
+When publishing the static R2 index, upload the generated `outputs\public_release\site\index.html` as the bucket-root `index.html` so viewer links resolve to `viewers/<dataset>.html` and package links resolve through Hugging Face.
 
 Create per-dataset archives after all release formats are complete:
 
@@ -265,7 +267,7 @@ pip install pyproj
 
 ## Repository Status
 
-This repository currently contains tools, format documentation, release manifests, and packaging scripts. Dataset download links and browser viewers are published at the [PVL-BA-Bench Public Release](https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html).
+This repository contains tools, format documentation, release manifests, and packaging scripts. Dataset download links and browser viewers are published at the [PVL-BA-Bench Public Release](https://pub-2c28bdf6e62548919c47727a9b969dda.r2.dev/index.html), with package storage mirrored by the [Hugging Face dataset repository](https://huggingface.co/datasets/Polar-vision/PVL-BA-Bench).
 
 ## Citation
 
