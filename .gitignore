@@ -5,6 +5,7 @@ venv/
 env/
 .DS_Store
 Thumbs.db
+*.docx
 ~$*.docx
 
 # Large local datasets and generated outputs
